@@ -1,0 +1,80 @@
+Option Explicit
+
+Sub Debug_Step1_Check()
+    Dim wb As Workbook
+    Dim wsSource As Worksheet
+    Dim lastRow As Long
+    Dim dict As Object, rng As Range, cell As Range
+    
+    Set wb = ThisWorkbook
+    
+    ' --- 檢查 1: 分頁名稱是否正確 ---
+    On Error Resume Next
+    Set wsSource = wb.Sheets("1_1")
+    On Error GoTo 0
+    
+    If wsSource Is Nothing Then
+        MsgBox "【嚴重錯誤】" & vbCrLf & _
+               "找不到名稱為 [1_1] 的分頁！" & vbCrLf & _
+               "請檢查：" & vbCrLf & _
+               "1. 分頁名稱是否完全正確？(有無多餘空白鍵?)" & vbCrLf & _
+               "2. 檔案是否正確？", vbCritical
+        Exit Sub
+    Else
+        MsgBox "【檢查通過】" & vbCrLf & _
+               "成功找到分頁 [1_1]。", vbInformation
+    End If
+    
+    ' --- 檢查 2: 解除篩選狀態 ---
+    If wsSource.FilterMode Then
+        wsSource.ShowAllData
+        MsgBox "【提示】" & vbCrLf & _
+               "發現原始資料處於篩選狀態，已強制解除篩選以讀取完整資料。", vbInformation
+    End If
+    
+    ' --- 檢查 3: 確認資料列數 ---
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    
+    MsgBox "【資料統計】" & vbCrLf & _
+           "偵測到的最後一列 (lastRow) 為: " & lastRow & " 列。" & vbCrLf & _
+           "程式預期資料應在 B2 到 B" & lastRow & " 之間。", vbInformation
+           
+    If lastRow < 2 Then
+        MsgBox "【嚴重錯誤】" & vbCrLf & _
+               "B欄 (Chart ID) 似乎沒有資料 (lastRow < 2)。" & vbCrLf & _
+               "請確認 Chart ID 是否真的在 B 欄？", vbCritical
+        Exit Sub
+    End If
+    
+    ' --- 檢查 4: 確認 Dictionary 是否能抓到 ID ---
+    Set rng = wsSource.Range("B2:B" & lastRow)
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    For Each cell In rng
+        ' 增加除錯：顯示前幾個抓到的值
+        If cell.Row <= 5 Then
+             Debug.Print "Row " & cell.Row & ": " & cell.Value
+        End If
+        
+        If Not IsError(cell.Value) Then
+            If Len(Trim(cell.Value)) > 0 Then
+                If Not dict.exists(cell.Value) Then
+                    dict.Add cell.Value, Nothing
+                End If
+            End If
+        End If
+    Next cell
+    
+    If dict.Count = 0 Then
+        MsgBox "【嚴重錯誤】" & vbCrLf & _
+               "程式掃描了 B2:B" & lastRow & "，但沒有找到任何有效的 Chart ID。" & vbCrLf & _
+               "可能是資料格式問題或全部為空值。", vbCritical
+        Exit Sub
+    Else
+        MsgBox "【檢查通過】" & vbCrLf & _
+               "成功辨識出 " & dict.Count & " 個不重複的 Chart ID。" & vbCrLf & _
+               "第一個 ID 為: " & dict.keys()(0) & vbCrLf & vbCrLf & _
+               "若看到此訊息，代表資料讀取正常，問題可能出在「複製」或「篩選」階段。", vbInformation
+    End If
+
+End Sub
