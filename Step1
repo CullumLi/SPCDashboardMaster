@@ -1,0 +1,122 @@
+Option Explicit
+
+Sub Step1_SplitData_Master()
+    Dim t As Double
+    t = Timer
+    
+    ' 1. 優化環境設定：關閉螢幕更新、自動計算、警告視窗以加速執行
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.DisplayAlerts = False
+    
+    Dim wb As Workbook
+    Dim wsSource As Worksheet
+    Dim rng As Range, cell As Range
+    Dim dict As Object
+    Dim lastRow As Long
+    Dim key As Variant
+    Dim newWs As Worksheet
+    Dim visibleRng As Range
+    
+    Set wb = ThisWorkbook
+    
+    ' 檢查是否存在 "1_1" 分頁
+    On Error Resume Next
+    Set wsSource = wb.Sheets("1_1")
+    On Error GoTo 0
+    
+    If wsSource Is Nothing Then
+        MsgBox "錯誤：找不到名稱為 '1_1' 的分頁，請確認檔案內容。", vbCritical
+        GoTo ExitHandler
+    End If
+    
+    ' 取得最後一列
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "錯誤：'1_1' 分頁中沒有足夠的資料。", vbExclamation
+        GoTo ExitHandler
+    End If
+    
+    ' 2. 使用 Dictionary 取得 B 欄所有不重複的 CHART_ID
+    Set rng = wsSource.Range("B2:B" & lastRow)
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    For Each cell In rng
+        ' 排除錯誤值與空值
+        If Not IsError(cell.Value) Then
+            If Len(cell.Value) > 0 Then
+                If Not dict.exists(cell.Value) Then
+                    dict.Add cell.Value, Nothing
+                End If
+            End If
+        End If
+    Next cell
+    
+    ' 3. 迴圈篩選並拆分資料
+    For Each key In dict.keys
+        ' 新增分頁
+        ' 檢查分頁名稱是否已存在，若存在則先刪除舊的 (防止報錯)
+        On Error Resume Next
+        wb.Sheets(CStr(key)).Delete
+        On Error GoTo 0
+        
+        Set newWs = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+        On Error Resume Next
+        newWs.Name = CStr(key)
+        On Error GoTo 0
+        
+        ' 執行自動篩選 (針對 B 欄)
+        wsSource.Range("A1").AutoFilter Field:=2, Criteria1:=key
+        
+        ' 取得可見儲存格
+        On Error Resume Next
+        Set visibleRng = wsSource.Range("A1:AG" & lastRow).SpecialCells(xlCellTypeVisible)
+        On Error GoTo 0
+        
+        If Not visibleRng Is Nothing Then
+            ' 欄位映射與複製：
+            ' 原欄位: B, C, H, I, Y, AA, AB, AC, AD, AE, AF, AG
+            ' 貼上至新分頁的 A~L 欄
+            
+            Intersect(visibleRng, wsSource.Columns("B")).Copy newWs.Range("A1")
+            Intersect(visibleRng, wsSource.Columns("C")).Copy newWs.Range("B1")
+            Intersect(visibleRng, wsSource.Columns("H")).Copy newWs.Range("C1")
+            Intersect(visibleRng, wsSource.Columns("I")).Copy newWs.Range("D1")
+            Intersect(visibleRng, wsSource.Columns("Y")).Copy newWs.Range("E1")
+            Intersect(visibleRng, wsSource.Columns("AA")).Copy newWs.Range("F1")
+            Intersect(visibleRng, wsSource.Columns("AB")).Copy newWs.Range("G1")
+            Intersect(visibleRng, wsSource.Columns("AC")).Copy newWs.Range("H1")
+            Intersect(visibleRng, wsSource.Columns("AD")).Copy newWs.Range("I1")
+            Intersect(visibleRng, wsSource.Columns("AE")).Copy newWs.Range("J1")
+            Intersect(visibleRng, wsSource.Columns("AF")).Copy newWs.Range("K1")
+            Intersect(visibleRng, wsSource.Columns("AG")).Copy newWs.Range("L1")
+            
+            ' 自動調整欄寬 (選擇性)
+            newWs.Columns("A:L").AutoFit
+        End If
+    Next key
+    
+    ' 4. 刪除原始 "1_1" 分頁
+    wsSource.AutoFilterMode = False ' 清除篩選狀態
+    wsSource.Delete
+    
+    ' 5. 新增 Peak, Shift, Tilt 三個空白分頁
+    Dim sName As Variant
+    For Each sName In Array("Tilt", "Shift", "Peak") ' 倒序新增，這樣 Peak 會在最前面
+        On Error Resume Next
+        wb.Sheets(sName).Delete ' 若已存在先刪除，保持乾淨
+        On Error GoTo 0
+        
+        Set newWs = wb.Sheets.Add(Before:=wb.Sheets(1))
+        newWs.Name = sName
+    Next sName
+    
+ExitHandler:
+    ' 恢復環境設定
+    Application.DisplayAlerts = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    
+    MsgBox "Step 1 執行完成！" & vbCrLf & "資料已拆分，並已建立 Peak, Shift, Tilt 分頁。", vbInformation, "耗時: " & Format(Timer - t, "0.00") & "秒"
+
+End Sub
