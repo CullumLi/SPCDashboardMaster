@@ -1,0 +1,250 @@
+Option Explicit
+
+Sub Run_SPC_Master_Project()
+    Dim t As Double
+    t = Timer
+    
+    ' 優化執行環境：關閉螢幕更新、自動計算、警告視窗
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.DisplayAlerts = False
+    
+    ' ==========================================
+    ' Step 1: 資料拆分 (精準欄位映射)
+    ' ==========================================
+    Call Step1_Split_Data
+    
+    ' ==========================================
+    ' Step 2: SPC 統計運算與篩選
+    ' ==========================================
+    Call Step2_SPC_Calculation
+    
+    ' 恢復環境設定
+    Application.DisplayAlerts = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    
+    MsgBox "VBA大師回報：任務完成！" & vbCrLf & _
+           "已完成資料拆分與 SPC 異常篩選。" & vbCrLf & _
+           "僅保留紅色異常分頁及 Peak/Shift/Tilt。", vbInformation, "耗時: " & Format(Timer - t, "0.00") & "秒"
+End Sub
+
+' ==========================================
+' Step 1: 資料拆分
+' ==========================================
+Sub Step1_Split_Data()
+    Dim wb As Workbook
+    Dim wsSource As Worksheet
+    Dim rng As Range, dict As Object, cell As Range
+    Dim lastRow As Long
+    Dim key As Variant
+    Dim newWs As Worksheet
+    Dim visibleRng As Range
+    
+    Set wb = ThisWorkbook
+    
+    ' 1. 檢查來源分頁
+    On Error Resume Next
+    Set wsSource = wb.Sheets("1_1")
+    On Error GoTo 0
+    
+    If wsSource Is Nothing Then
+        MsgBox "錯誤：找不到名稱為 [1_1] 的分頁，請確認檔案。", vbCritical
+        End
+    End If
+    
+    ' 強制解除篩選以讀取完整資料
+    If wsSource.FilterMode Then wsSource.ShowAllData
+    
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+    
+    ' 2. 建立不重複的 Chart ID 清單
+    Set rng = wsSource.Range("B2:B" & lastRow)
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    For Each cell In rng
+        If Not IsError(cell.Value) Then
+            If Len(Trim(CStr(cell.Value))) > 0 Then
+                dict(CStr(cell.Value)) = 1
+            End If
+        End If
+    Next cell
+    
+    ' 3. 迴圈拆分
+    For Each key In dict.keys
+        ' 刪除舊的同名分頁 (防止報錯)
+        On Error Resume Next
+        wb.Sheets(CStr(key)).Delete
+        On Error GoTo 0
+        
+        Set newWs = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+        newWs.Name = CStr(key)
+        
+        ' 篩選 ID
+        wsSource.Range("A1").AutoFilter Field:=2, Criteria1:=key
+        
+        ' --- 分段複製以確保欄位順序正確 (對應 Step 2 的參數) ---
+        ' 目標 A, B <= 來源 B, C (Chart ID, Chart Name)
+        ' 目標 C, D <= 來源 H, I (Data Value, Update Time)
+        ' 目標 E    <= 來源 Y    (Xbar ? 這裡保留Y到E)
+        ' 目標 F~L  <= 來源 AA~AG (Xbar, Sigma, SpecHigh, SpecLow, Target, UCL, LCL)
+        
+        ' 為了避免 SpecialCells 在複製不連續欄位時出錯，我們分四次複製區塊
+        
+        On Error Resume Next
+        ' 區塊 1: 來源 B:C -> 目標 A:B
+        Set visibleRng = wsSource.Range("B1:C" & lastRow).SpecialCells(xlCellTypeVisible)
+        If Not visibleRng Is Nothing Then visibleRng.Copy newWs.Range("A1")
+        
+        ' 區塊 2: 來源 H:I -> 目標 C:D (這裡 C欄就是 DATA_VALUE)
+        Set visibleRng = wsSource.Range("H1:I" & lastRow).SpecialCells(xlCellTypeVisible)
+        If Not visibleRng Is Nothing Then visibleRng.Copy newWs.Range("C1")
+        
+        ' 區塊 3: 來源 Y -> 目標 E
+        Set visibleRng = wsSource.Range("Y1:Y" & lastRow).SpecialCells(xlCellTypeVisible)
+        If Not visibleRng Is Nothing Then visibleRng.Copy newWs.Range("E1")
+        
+        ' 區塊 4: 來源 AA:AG -> 目標 F:L
+        ' F=AA(XBAR), G=AB(SIGMA), H=AC(HIGH), I=AD(LOW), J=AE(TARGET), K=AF(UCL), L=AG(LCL)
+        Set visibleRng = wsSource.Range("AA1:AG" & lastRow).SpecialCells(xlCellTypeVisible)
+        If Not visibleRng Is Nothing Then visibleRng.Copy newWs.Range("F1")
+        On Error GoTo 0
+        
+        newWs.Columns("A:L").AutoFit
+    Next key
+    
+    ' 4. 刪除來源與建立結果頁
+    wsSource.AutoFilterMode = False
+    Application.DisplayAlerts = False
+    wsSource.Delete
+    
+    Dim sName As Variant
+    For Each sName In Array("Tilt", "Shift", "Peak")
+        On Error Resume Next
+        wb.Sheets(sName).Delete
+        On Error GoTo 0
+        Set newWs = wb.Sheets.Add(Before:=wb.Sheets(1))
+        newWs.Name = sName
+        newWs.Tab.Color = vbRed ' 預先標記紅色以保留
+    Next sName
+    Application.DisplayAlerts = True
+End Sub
+
+' ==========================================
+' Step 2: SPC 運算與篩選
+' ==========================================
+Sub Step2_SPC_Calculation()
+    Dim ws As Worksheet
+    Dim arr As Variant
+    Dim i As Long, r As Long
+    Dim isAnomaly As Boolean
+    Dim val As Double, sigma As Double, target As Double
+    Dim cShift As Long            ' 異常B 計數器
+    Dim cTrendUp As Long, cTrendDown As Long ' 異常C 計數器
+    Dim lastVal As Double
+    Dim wsToDelete As Collection
+    
+    Set wsToDelete = New Collection
+    
+    For Each ws In ThisWorkbook.Worksheets
+        ' 跳過 Peak, Shift, Tilt (但保留它們)
+        If ws.Name = "Peak" Or ws.Name = "Shift" Or ws.Name = "Tilt" Then GoTo NextWs
+        
+        r = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+        If r < 2 Then GoTo MarkForDelete
+        
+        ' 讀入陣列 (Mapping 後的位置)
+        ' C欄 (Array Col 3) = DATA_VALUE
+        ' G欄 (Array Col 7) = SIGMA
+        ' J欄 (Array Col 10)= SPEC_TARGET
+        ' 讀取 A~L 範圍
+        arr = ws.Range("A2:L" & r).Value
+        
+        isAnomaly = False
+        cShift = 0: cTrendUp = 0: cTrendDown = 0
+        
+        For i = 1 To UBound(arr, 1)
+            ' 驗證數值有效性 (防錯)
+            If Not IsNumeric(arr(i, 3)) Or Not IsNumeric(arr(i, 7)) Or Not IsNumeric(arr(i, 10)) Then GoTo ContinueLoop
+            If IsEmpty(arr(i, 3)) Then GoTo ContinueLoop
+            
+            val = CDbl(arr(i, 3))    ' DATA_VALUE
+            sigma = CDbl(arr(i, 7))  ' SIGMA
+            target = CDbl(arr(i, 10)) ' SPEC_TARGET
+            
+            If sigma = 0 Then sigma = 0.00001 ' 防止除以零
+            
+            Dim absDiff As Double
+            absDiff = Abs(val - target)
+            
+            ' --- 異常 A: |Data - Target| > 2 * Sigma ---
+            If absDiff > 2 * sigma Then
+                isAnomaly = True
+                Exit For
+            End If
+            
+            ' --- 異常 B: 連續 3 點 |Data - Target| > 1.5 * Sigma ---
+            If absDiff > 1.5 * sigma Then
+                cShift = cShift + 1
+            Else
+                cShift = 0
+            End If
+            
+            If cShift >= 3 Then
+                isAnomaly = True
+                Exit For
+            End If
+            
+            ' --- 異常 C: 連續 7 點 變大 or 變小 ---
+            If i > 1 Then
+                If val > lastVal Then
+                    cTrendUp = cTrendUp + 1
+                    cTrendDown = 0
+                ElseIf val < lastVal Then
+                    cTrendDown = cTrendDown + 1
+                    cTrendUp = 0
+                Else
+                    cTrendUp = 0
+                    cTrendDown = 0
+                End If
+            Else
+                cTrendUp = 0: cTrendDown = 0
+            End If
+            
+            ' 連續 7 點意味著 6 次比較 (例如: 1<2, 2<3, ... 6<7)
+            If cTrendUp >= 6 Or cTrendDown >= 6 Then
+                isAnomaly = True
+                Exit For
+            End If
+            
+            lastVal = val
+ContinueLoop:
+        Next i
+        
+        ' 根據結果標記
+        If isAnomaly Then
+            ws.Tab.Color = vbRed
+        Else
+MarkForDelete:
+            wsToDelete.Add ws
+        End If
+
+NextWs:
+    Next ws
+    
+    ' 批次刪除無異常分頁
+    Dim item As Worksheet
+    Application.DisplayAlerts = False
+    For Each item In wsToDelete
+        ' 絕對不刪除 Peak, Shift, Tilt
+        If item.Name <> "Peak" And item.Name <> "Shift" And item.Name <> "Tilt" Then
+            ' 確保活頁簿不會被清空 (至少保留3張結果頁)
+            If ThisWorkbook.Worksheets.Count > 3 Then
+                item.Delete
+            End If
+        End If
+    Next item
+    Application.DisplayAlerts = True
+    
+End Sub
