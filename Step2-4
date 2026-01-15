@@ -1,0 +1,59 @@
+Option Explicit
+
+Sub Step1_ForceRun()
+    Dim wb As Workbook
+    Dim wsSource As Worksheet
+    Dim rng As Range, dict As Object, cell As Range
+    Dim lastRow As Long
+    Dim key As Variant
+    Dim newWs As Worksheet
+    Dim visibleRng As Range
+    
+    Set wb = ThisWorkbook
+    Set wsSource = wb.Sheets("1_1") ' 若報錯代表找不到分頁，請讓它報錯以便知道原因
+    
+    ' 強制解除篩選
+    If wsSource.FilterMode Then wsSource.ShowAllData
+    
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    Set rng = wsSource.Range("B2:B" & lastRow)
+    
+    Set dict = CreateObject("Scripting.Dictionary")
+    For Each cell In rng
+        If Not IsError(cell.Value) Then
+            If Len(cell.Value) > 0 Then
+                dict(cell.Value) = 1
+            End If
+        End If
+    Next cell
+    
+    ' 開始拆分
+    For Each key In dict.keys
+        ' 狀態列顯示進度
+        Application.StatusBar = "正在處理 Chart ID: " & key
+        
+        ' 刪除舊分頁 (若有)
+        Application.DisplayAlerts = False
+        On Error Resume Next
+        wb.Sheets(CStr(key)).Delete
+        On Error GoTo 0
+        Application.DisplayAlerts = True
+        
+        Set newWs = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+        newWs.Name = CStr(key)
+        
+        wsSource.Range("A1").AutoFilter Field:=2, Criteria1:=key
+        
+        ' 嘗試複製 (不使用 SpecialCells，改用直接複製以防 SpecialCells 錯誤)
+        wsSource.Range("A1:AG" & lastRow).Copy newWs.Range("A1")
+        
+        ' 刪除不需要的欄位 (反向操作：先全部複製再刪除不要的，這是最穩的方法)
+        ' 保留: B, C, H, I, Y, AA, AB, AC, AD, AE, AF, AG
+        ' 對應位置: 2, 3, 8, 9, 25, 27, 28, 29, 30, 31, 32, 33
+        ' 建議：為了測試，先看能否成功複製出分頁，若能成功，我們再精修欄位
+    Next key
+    
+    wsSource.AutoFilterMode = False
+    Application.StatusBar = False
+    MsgBox "強制執行版完成，請檢查是否有新分頁產生。"
+End Sub
