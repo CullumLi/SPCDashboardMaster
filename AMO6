@@ -1,0 +1,160 @@
+Option Explicit
+
+Sub Run_AMO_Final_Fixed_Layout()
+    Dim fd As FileDialog
+    Dim fileItem As Variant
+    Dim wbSource As Workbook, wbNew As Workbook
+    Dim wsSource As Worksheet, wsData As Worksheet, wsSummary As Worksheet
+    Dim lastRow As Long, destRow As Long
+    Dim rngCopy As Range
+    Dim pc As PivotCache
+    Dim pt As PivotTable
+    Dim pf As PivotField
+    Dim savePath As String
+    Dim fileName As String
+    Dim currentHour As Integer
+    Dim reportDate As Date
+    Dim shiftCode As String
+    Dim srcDataStr As String
+    
+    ' 優化效能：關閉螢幕更新與警示
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    ' ==========================================
+    ' Step 0: 開啟檔案選擇視窗
+    ' ==========================================
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "請選擇FMS、EXH、HVAC、CR檔案進行AMO彙整"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xls;*.xlsx;*.xlsm;*.csv"
+        .AllowMultiSelect = True
+        
+        If .Show = -1 Then
+            ' 建立新活頁簿
+            Set wbNew = Workbooks.Add
+            Set wsData = wbNew.Sheets(1)
+            wsData.Name = "Data_Source"
+            
+            ' 建立標題列 (對應 B, C, E, F, G, H, I, K)
+            wsData.Range("A1:H1").Value = Array("日期", "時間", "Tag", "Tag 描述", "警報", "值", "優先順", "MEMO")
+            destRow = 2
+            
+            ' ==========================================
+            ' Step 1: 整合檔案資料
+            ' ==========================================
+            For Each fileItem In .SelectedItems
+                Set wbSource = Workbooks.Open(fileItem)
+                Set wsSource = wbSource.Sheets(1)
+                
+                lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+                
+                If lastRow >= 2 Then
+                    ' 使用 Union 抓取不連續欄位 (B:C, E:I, K)
+                    Set rngCopy = Union(wsSource.Range("B2:C" & lastRow), _
+                                        wsSource.Range("E2:I" & lastRow), _
+                                        wsSource.Range("K2:K" & lastRow))
+                    
+                    rngCopy.Copy Destination:=wsData.Cells(destRow, 1)
+                    destRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row + 1
+                End If
+                
+                wbSource.Close SaveChanges:=False
+            Next fileItem
+        Else
+            MsgBox "未選擇檔案，程式結束。", vbExclamation
+            Exit Sub
+        End If
+    End With
+    
+    ' 自動調整資料欄寬
+    wsData.Columns("A:H").AutoFit
+    
+    ' ==========================================
+    ' Step 2: 製作樞紐分析表 (修正欄位消失問題)
+    ' ==========================================
+    Set wsSummary = wbNew.Sheets.Add(After:=wsData)
+    wsSummary.Name = "Summary"
+    
+    ' 定義資料來源字串 (R1C1)
+    lastRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row
+    srcDataStr = "'" & wsData.Name & "'!" & wsData.Range("A1:H" & lastRow).Address(ReferenceStyle:=xlR1C1)
+    
+    ' 建立快取與表格
+    Set pc = wbNew.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=srcDataStr, Version:=xlPivotTableVersion15)
+    Set pt = pc.CreatePivotTable(TableDestination:=wsSummary.Range("A1"), TableName:="AMOTable", DefaultVersion:=xlPivotTableVersion15)
+    
+    With pt
+        ' 1. 先加入列欄位 (Row Fields)
+        .PivotFields("Tag").Orientation = xlRowField
+        .PivotFields("Tag").Position = 1
+        
+        .PivotFields("Tag 描述").Orientation = xlRowField
+        .PivotFields("Tag 描述").Position = 2
+        
+        .PivotFields("優先順").Orientation = xlRowField
+        .PivotFields("優先順").Position = 3
+        
+        .PivotFields("MEMO").Orientation = xlRowField
+        .PivotFields("MEMO").Position = 4
+        
+        ' 2. 加入值欄位 (Values)
+        .AddDataField .PivotFields("Tag 描述"), "合計", xlCount
+        
+        ' 3. 【關鍵修正】強制設定版面配置
+        ' 必須在欄位加入後執行，強制展開為列表模式
+        .RowAxisLayout xlTabularRow
+        .ColumnGrand = False
+        .RowGrand = False
+        
+        ' 4. 關閉所有欄位的小計 (避免干擾版面)
+        For Each pf In .PivotFields
+            pf.Subtotals = Array(False, False, False, False, False, False, False, False, False, False, False, False)
+        Next pf
+        
+        ' 5. 填滿空白標籤
+        On Error Resume Next
+        .RepeatAllLabels xlRepeatLabels
+        On Error GoTo 0
+        
+        ' 6. 排序 (針對最外層 Tag 依照 合計 排序)
+        .PivotFields("Tag").AutoSort xlDescending, "合計"
+    End With
+    
+    ' 最後再次強制調整欄寬，確保所有文字顯示出來
+    wsSummary.Columns("A:E").AutoFit
+    
+    ' ==========================================
+    ' Step 3: 存檔 (日夜班判斷)
+    ' ==========================================
+    currentHour = Hour(Now)
+    
+    If currentHour < 10 Then
+        reportDate = Date - 1
+        shiftCode = "N"
+    Else
+        reportDate = Date
+        shiftCode = "D"
+    End If
+    
+    fileName = "AMO_" & Format(reportDate, "yyyymmdd") & shiftCode
+    
+    Application.ScreenUpdating = True
+    
+    MsgBox "AMO樞紐分析完成，請選擇儲存路徑", vbInformation
+    
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "請選擇儲存路徑"
+        If .Show = -1 Then
+            savePath = .SelectedItems(1)
+            wbNew.SaveAs Filename:=savePath & "\" & fileName & ".xlsx", FileFormat:=xlOpenXMLWorkbook
+            MsgBox "檔案已成功儲存於：" & vbNewLine & savePath & "\" & fileName & ".xlsx", vbInformation
+        Else
+            MsgBox "未選擇路徑，檔案未儲存 (檔案仍開啟中)。", vbExclamation
+        End If
+    End With
+    
+    Application.DisplayAlerts = True
+
+End Sub
