@@ -1,0 +1,177 @@
+Option Explicit
+
+Sub Run_AirPollution_Check_Final()
+    Dim fd As FileDialog
+    Dim pathGolden As String, pathCompare As String
+    Dim wbGolden As Workbook, wbCompare As Workbook
+    Dim wsG As Worksheet, wsC As Worksheet
+    Dim r As Integer, c As Integer
+    Dim valG As Variant, valC As Variant
+    Dim anomalyList As String
+    Dim anomalyCount As Long
+    Dim sheetHasError As Boolean
+    Dim savePath As String
+    Dim fileName As String
+    Dim t As Double
+    Dim numC As Double, numG As Double
+    Dim isAnomaly As Boolean
+    
+    t = Timer
+    
+    ' 優化效能設定
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    
+    ' ==========================================
+    ' Step 1: 選擇 Golden Sample (標準檔案)
+    ' ==========================================
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "請選擇標準檔案"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xls;*.xlsx;*.xlsm"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            pathGolden = .SelectedItems(1)
+        Else
+            MsgBox "未選擇標準檔案，程式結束。", vbExclamation
+            GoTo ExitHandler
+        End If
+    End With
+    
+    ' ==========================================
+    ' Step 2: 選擇 Compare File (比對檔案)
+    ' ==========================================
+    With fd
+        .Title = "請選擇一個檔案，與標準檔案進行空汙資料比對"
+        If .Show = -1 Then
+            pathCompare = .SelectedItems(1)
+        Else
+            MsgBox "未選擇比對檔案，程式結束。", vbExclamation
+            GoTo ExitHandler
+        End If
+    End With
+    
+    ' 開啟檔案
+    Set wbGolden = Workbooks.Open(pathGolden, ReadOnly:=True) ' 唯讀開啟標準檔
+    Set wbCompare = Workbooks.Open(pathCompare)
+    
+    anomalyCount = 0
+    anomalyList = ""
+    
+    ' ==========================================
+    ' Step 3: 執行比對 (範圍 C11:K41)
+    ' ==========================================
+    For Each wsC In wbCompare.Worksheets
+        ' 嘗試在標準檔中找到同名分頁
+        On Error Resume Next
+        Set wsG = wbGolden.Worksheets(wsC.Name)
+        
+        ' 若標準檔無此分頁，則跳過不比對
+        If Err.Number <> 0 Then
+            Err.Clear
+            GoTo NextSheet
+        End If
+        On Error GoTo 0
+        
+        sheetHasError = False
+        
+        ' 遍歷指定範圍 C11 (Row 11, Col 3) 到 K41 (Row 41, Col 11)
+        For r = 11 To 41
+            For c = 3 To 11
+                valC = wsC.Cells(r, c).Value
+                valG = wsG.Cells(r, c).Value
+                
+                ' 規則1：排除空白與文字
+                ' 檢查 valC 是否為數字，且不是空值
+                If IsNumeric(valC) And Not IsEmpty(valC) And Len(Trim(CStr(valC))) > 0 Then
+                    
+                    ' 確保標準值也是數字 (防呆)
+                    If IsNumeric(valG) Then
+                        numC = CDbl(valC)
+                        numG = CDbl(valG)
+                        isAnomaly = False
+                        
+                        ' 規則2：比對數值是否超過 ±5%
+                        ' 若標準值為 0，比較值不為 0 則視為異常
+                        If numG = 0 Then
+                            If numC <> 0 Then isAnomaly = True
+                        Else
+                            ' 絕對值差距 > 絕對值標準的 5%
+                            If Abs(numC - numG) > Abs(numG * 0.05) Then isAnomaly = True
+                        End If
+                        
+                        ' 若異常：標記儲存格紅色，並標記該分頁有誤
+                        If isAnomaly Then
+                            wsC.Cells(r, c).Interior.Color = vbRed
+                            sheetHasError = True
+                        End If
+                    End If
+                Else
+                    ' 若是文字或空白，不做任何變更 (保留原內容及格式)
+                End If
+            Next c
+        Next r
+        
+        ' 若該分頁有異常，進行分頁標記與統計
+        If sheetHasError Then
+            ' 標示分頁標籤為紅色
+            wsC.Tab.Color = vbRed
+            
+            anomalyCount = anomalyCount + 1
+            ' 加入異常清單字串
+            If anomalyList = "" Then
+                anomalyList = wsC.Name
+            Else
+                anomalyList = anomalyList & "," & wsC.Name
+            End If
+        End If
+
+NextSheet:
+    Next wsC
+    
+    ' 關閉標準檔案 (不存檔)
+    wbGolden.Close SaveChanges:=False
+    
+    ' ==========================================
+    ' Step 4: 報告與存檔
+    ' ==========================================
+    ' 恢復畫面更新以顯示對話框
+    Application.ScreenUpdating = True
+    
+    Dim msgContent As String
+    If anomalyCount > 0 Then
+        msgContent = "比對完成，共有" & anomalyCount & "筆資料超標，異常設備為:" & anomalyList & "，請選擇儲存路徑"
+    Else
+        msgContent = "比對完成，共有0筆資料超標，無異常設備，請選擇儲存路徑"
+    End If
+    
+    MsgBox msgContent, vbInformation, "VBA大師比對結果"
+    
+    ' 設定檔名規則：Sex_yyyymmdd.xlsx
+    fileName = "Sex_" & Format(Date, "yyyymmdd") & ".xlsx"
+    
+    ' 選擇存檔資料夾
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "請選擇儲存路徑"
+        If .Show = -1 Then
+            savePath = .SelectedItems(1)
+            ' 另存新檔 (xlsx 格式)
+            Application.DisplayAlerts = False ' 覆蓋舊檔不提示
+            wbCompare.SaveAs Filename:=savePath & "\" & fileName, FileFormat:=xlOpenXMLWorkbook
+            Application.DisplayAlerts = True
+            
+            MsgBox "檔案已成功儲存於：" & vbNewLine & savePath & "\" & fileName, vbInformation
+        Else
+            MsgBox "未選擇路徑，檔案未儲存 (但比對完成之檔案仍開啟中)。", vbExclamation
+        End If
+    End With
+    
+ExitHandler:
+    ' 恢復環境設定
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.Calculation = xlCalculationAutomatic
+    
+End Sub
