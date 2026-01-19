@@ -1,0 +1,124 @@
+Sub CreateVBACourseSlides()
+    Dim pptApp As Object
+    Dim pptPres As Presentation
+    Dim pptSlide As Slide
+    Dim slideIndex As Integer
+    
+    ' 設定目前的應用程式
+    Set pptApp = Application
+    Set pptPres = pptApp.ActivePresentation
+    
+    ' 定義一個輔助 Sub 來新增投影片
+    ' 參數：標題, 內容文字
+    
+    ' Slide 1: 封面
+    Set pptSlide = pptPres.Slides.Add(1, ppLayoutTitle)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "AI 賦能 Excel：用 ChatGPT 打造 VBA 自動化工作流"
+        .Shapes(2).TextFrame.TextRange.Text = "第一階段：觀念建立與環境準備 (暖身篇)"
+    End With
+    
+    ' Slide 2: 課程核心目標
+    Set pptSlide = pptPres.Slides.Add(2, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "課程核心目標"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "1. 觀念翻轉：不背語法，學會「指揮」AI" & vbCrLf & _
+            "2. 環境準備：打造 Excel 開發者環境" & vbCrLf & _
+            "3. 實戰演練：從「錄製巨集」進化到「AI 生成」" & vbCrLf & _
+            "4. 成果驗收：完成第一個 Hello AI 程式"
+    End With
+
+    ' Slide 3: 為什麼現在學 VBA 最簡單？
+    Set pptSlide = pptPres.Slides.Add(3, ppLayoutTwoObjects)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "傳統學習 vs. AI 賦能學習"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "【過去的痛點】" & vbCrLf & _
+            "❌ 需背誦大量語法" & vbCrLf & _
+            "❌ 拼錯一字就報錯" & vbCrLf & _
+            "❌ 學習曲線極陡峭"
+        .Shapes(3).TextFrame.TextRange.Text = _
+            "【現在的模式】" & vbCrLf & _
+            "✅ 你的角色：產品經理 (PM)" & vbCrLf & _
+            "✅ AI 的角色：資深工程師" & vbCrLf & _
+            "✅ 核心能力：邏輯拆解與精準提問"
+    End With
+    
+    ' Slide 4: AI 協作黃金流程 (SOP)
+    Set pptSlide = pptPres.Slides.Add(4, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "AI 寫程式的標準流程 (SOP)"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "1. 想 (Think)：釐清需求 (輸入/輸出/邏輯)" & vbCrLf & _
+            "2. 問 (Prompt)：用自然語言下指令" & vbCrLf & _
+            "3. 貼 (Copy & Paste)：將程式碼貼入 VBE" & vbCrLf & _
+            "4. 測 (Test)：執行驗證與除錯"
+    End With
+    
+    ' Slide 5: 環境設定 (手把手操作)
+    Set pptSlide = pptPres.Slides.Add(5, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "工欲善其事：環境設定"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "📍 步驟一：開啟「開發人員」分頁" & vbCrLf & _
+            "   ([檔案] > [選項] > [自訂功能區] > 勾選 [開發人員])" & vbCrLf & _
+            "📍 步驟二：開啟 VBE 編輯器" & vbCrLf & _
+            "   (快捷鍵：Alt + F11)" & vbCrLf & _
+            "📍 步驟三：插入模組" & vbCrLf & _
+            "   (左側專案視窗右鍵 > [插入] > [模組])"
+    End With
+
+    ' Slide 6: 存檔的重要性
+    Set pptSlide = pptPres.Slides.Add(6, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "⚠️ 存檔關鍵規則"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "❌ 一般 Excel 檔 (.xlsx)：無法儲存程式碼！存檔後程式會消失。" & vbCrLf & vbCrLf & _
+            "✅ 啟用巨集的活頁簿 (.xlsm)：必須存成這個格式！"
+    End With
+
+    ' Slide 7: 實戰演練：標題格式化
+    Set pptSlide = pptPres.Slides.Add(7, ppLayoutTwoObjects)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "實戰比一比：錄製 vs. AI"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "【方法 A：錄製巨集】" & vbCrLf & _
+            "- 程式碼冗長" & vbCrLf & _
+            "- 包含無效動作 (Select)" & vbCrLf & _
+            "- 修改不易"
+        .Shapes(3).TextFrame.TextRange.Text = _
+            "【方法 B：ChatGPT 生成】" & vbCrLf & _
+            "- 程式碼簡潔" & vbCrLf & _
+            "- 邏輯清晰 (With...End With)" & vbCrLf & _
+            "- 執行速度快"
+    End With
+
+    ' Slide 8: Prompt 範例
+    Set pptSlide = pptPres.Slides.Add(8, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "試試這個 Prompt (指令)"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "「你是一個 Excel VBA 專家。" & vbCrLf & _
+            "請幫我寫一個 Sub，針對當前工作表的 A1:E1 範圍，" & vbCrLf & _
+            "執行以下格式設定：" & vbCrLf & _
+            "1. 字體加粗" & vbCrLf & _
+            "2. 背景顏色設為黃色" & vbCrLf & _
+            "3. 文字水平置中" & vbCrLf & _
+            "程式碼請保持簡潔，不要使用 Select。」"
+    End With
+
+    ' Slide 9: 課後任務
+    Set pptSlide = pptPres.Slides.Add(9, ppLayoutText)
+    With pptSlide
+        .Shapes(1).TextFrame.TextRange.Text = "課後小任務 (Homework)"
+        .Shapes(2).TextFrame.TextRange.Text = _
+            "1. 開啟一個新 Excel" & vbCrLf & _
+            "2. 呼叫 GPT 寫一個程式：" & vbCrLf & _
+            "   『跳出一個訊息視窗 (MsgBox)，顯示 Hello, AI VBA!』" & vbCrLf & _
+            "3. 成功執行程式" & vbCrLf & _
+            "4. 將檔案正確存為 .xlsm 格式"
+    End With
+    
+    MsgBox "投影片生成完畢！請自行套用喜歡的設計範本。", vbInformation, "AI 助教"
+End Sub
