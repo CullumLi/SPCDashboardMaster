@@ -1,0 +1,460 @@
+Option Explicit
+
+' ==========================================================
+' VBA大師 - SPC 強制執行版 (含檔案選擇器 & 完整圖表邏輯)
+' ==========================================================
+
+' 全域變數定義 (用於跨 Sub 統計數量)
+Public TotalIDs_M As Long    ' M: 原始Chart ID總數
+Public CountPeak_N As Long   ' N: Peak圖表數
+Public CountShift_O As Long  ' O: Shift圖表數
+Public CountTilt_P As Long   ' P: Tilt圖表數
+Public wbTarget As Workbook  ' 目標操作的活頁簿
+
+Sub Run_SPC_Master_With_FilePicker()
+    Dim tStart As Double
+    Dim fd As FileDialog
+    Dim filePath As String
+    Dim msg As String
+    
+    ' 1. 啟動檔案選擇器
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "VBA大師 - 請選擇要進行SPC分析的原始Excel檔案"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xlsx; *.xlsm; *.xlsb; *.xls"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            filePath = .SelectedItems(1)
+        Else
+            MsgBox "未選擇檔案，程式終止。", vbExclamation
+            Exit Sub
+        End If
+    End With
+    
+    ' 2. 開啟目標檔案
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    
+    tStart = Timer
+    Set wbTarget = Workbooks.Open(filePath)
+    
+    ' 初始化全域變數
+    TotalIDs_M = 0
+    CountPeak_N = 0
+    CountShift_O = 0
+    CountTilt_P = 0
+    
+    ' 3. 執行核心流程 (加入錯誤處理以確保最後能恢復設定)
+    On Error GoTo ErrorHandler
+    
+    Call Step1_DataSplit
+    Call Step2_SPC_Logic_And_Coloring
+    Call Step3_Charting_And_Reporting
+    
+    ' 4. 完成與報告
+    Dim duration As Double
+    duration = CDbl(Format(Timer - tStart, "0.00"))
+    
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    msg = "異常Trend Chart製圖與篩選歸納已完成" & vbCrLf & _
+          "執行秒數: " & duration & " 秒" & vbCrLf & vbCrLf & _
+          "本次分析Chart ID總數量: " & TotalIDs_M & " 個" & vbCrLf & _
+          "Peak數量: " & CountPeak_N & " 個" & vbCrLf & _
+          "Shift數量: " & CountShift_O & " 個" & vbCrLf & _
+          "Tilt數量: " & CountTilt_P & " 個"
+          
+    MsgBox msg, vbInformation, "VBA大師 - 分析完成"
+    Exit Sub
+
+ErrorHandler:
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    MsgBox "執行過程中發生錯誤: " & Err.Description, vbCritical
+End Sub
+
+Sub Step1_DataSplit()
+    ' ==========================================
+    ' Step 1: 拆分 1_1 資料，並計算 M
+    ' ==========================================
+    Dim wsSource As Worksheet, wsNew As Worksheet
+    Dim lastRow As Long
+    Dim dict As Object
+    Dim cell As Range, rngID As Range
+    Dim key As Variant
+    Dim copyRng As Range
+    Dim sNames As Variant
+    Dim i As Integer
+    
+    ' 檢查 1_1 是否存在
+    On Error Resume Next
+    Set wsSource = wbTarget.Sheets("1_1")
+    On Error GoTo 0
+    
+    If wsSource Is Nothing Then
+        MsgBox "錯誤：在選定的檔案中找不到 '1_1' 分頁。", vbCritical
+        End
+    End If
+    
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    Set rngID = wsSource.Range("B2:B" & lastRow)
+    
+    ' 使用 Dictionary 統計不重複 ID
+    Set dict = CreateObject("Scripting.Dictionary")
+    For Each cell In rngID
+        If Not dict.exists(cell.Value) And CStr(cell.Value) <> "" Then
+            dict.Add cell.Value, Nothing
+        End If
+    Next cell
+    
+    TotalIDs_M = dict.Count ' 統計 M
+    
+    ' 依 ID 拆分分頁
+    For Each key In dict.keys
+        Set wsNew = wbTarget.Sheets.Add(After:=wbTarget.Sheets(wbTarget.Sheets.Count))
+        wsNew.Name = CStr(key) ' 強制轉字串避免數字命名問題
+        
+        wsSource.Range("A1").AutoFilter Field:=2, Criteria1:=key
+        
+        ' 欄位映射: B,C,H,I,Y,AA,AB,AC,AD,AE,AF,AG
+        ' 對應新分頁: A,B,C,D,E,F ,G ,H ,I ,J ,K ,L
+        Set copyRng = Union(wsSource.Range("B:C"), wsSource.Range("H:I"), _
+                            wsSource.Range("Y:Y"), wsSource.Range("AA:AG"))
+        
+        copyRng.SpecialCells(xlCellTypeVisible).Copy Destination:=wsNew.Range("A1")
+        wsNew.Columns.AutoFit
+    Next key
+    
+    ' 刪除來源分頁
+    wsSource.AutoFilterMode = False
+    wsSource.Delete
+    
+    ' 新增彙整用分頁
+    sNames = VBA.Array("Peak", "Shift", "Tilt")
+    For i = 0 To UBound(sNames)
+        ' 檢查是否已存在 (防呆)
+        On Error Resume Next
+        Set wsNew = wbTarget.Sheets(sNames(i))
+        If wsNew Is Nothing Then
+            Set wsNew = wbTarget.Sheets.Add(After:=wbTarget.Sheets(wbTarget.Sheets.Count))
+            wsNew.Name = sNames(i)
+        End If
+        On Error GoTo 0
+    Next i
+End Sub
+
+Sub Step2_SPC_Logic_And_Coloring()
+    ' ==========================================
+    ' Step 2: SPC 計算、儲存格變色、篩選分頁
+    ' ==========================================
+    Dim ws As Worksheet
+    Dim lastRow As Long, r As Long, i As Integer
+    Dim val As Double, target As Double, sigma As Double
+    Dim isAbnormal As Boolean
+    
+    ' 顏色定義
+    Dim colOrange As Long, colRed As Long, colPurple As Long
+    colOrange = RGB(255, 165, 0)   ' 橘色
+    colRed = vbRed                 ' 紅色
+    colPurple = RGB(112, 48, 160)  ' 紫色
+    
+    ' 使用倒序迴圈以便刪除 Sheet
+    For i = wbTarget.Worksheets.Count To 1 Step -1
+        Set ws = wbTarget.Worksheets(i)
+        
+        ' 跳過彙整頁
+        If ws.Name = "Peak" Or ws.Name = "Shift" Or ws.Name = "Tilt" Then GoTo NextSheet
+        
+        isAbnormal = False
+        lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+        
+        If lastRow >= 2 Then
+            ' 欄位索引: C=Data(3), G=Sigma(7), J=Target(10)
+            
+            For r = 2 To lastRow
+                val = VBA.Val(ws.Cells(r, 3).Value)
+                sigma = VBA.Val(ws.Cells(r, 7).Value)
+                target = VBA.Val(ws.Cells(r, 10).Value)
+                
+                ' --- 異常 A (Peak): |Data - Target| > 2*Sigma ---
+                If VBA.Abs(val - target) > (2 * sigma) Then
+                    ws.Cells(r, 3).Interior.Color = colOrange
+                    isAbnormal = True
+                End If
+                
+                ' --- 異常 B (Shift): 連續3點 |Data - Target| > 1.5*Sigma ---
+                If r <= lastRow - 2 Then
+                    Dim v1 As Double, v2 As Double, v3 As Double
+                    Dim t1 As Double, t2 As Double, t3 As Double
+                    Dim s1 As Double, s2 As Double, s3 As Double
+                    
+                    v1 = VBA.Val(ws.Cells(r, 3)): v2 = VBA.Val(ws.Cells(r + 1, 3)): v3 = VBA.Val(ws.Cells(r + 2, 3))
+                    t1 = VBA.Val(ws.Cells(r, 10)): t2 = VBA.Val(ws.Cells(r + 1, 10)): t3 = VBA.Val(ws.Cells(r + 2, 10))
+                    s1 = VBA.Val(ws.Cells(r, 7)): s2 = VBA.Val(ws.Cells(r + 1, 7)): s3 = VBA.Val(ws.Cells(r + 2, 7))
+                    
+                    If VBA.Abs(v1 - t1) > 1.5 * s1 And VBA.Abs(v2 - t2) > 1.5 * s2 And VBA.Abs(v3 - t3) > 1.5 * s3 Then
+                        ws.Cells(r, 3).Interior.Color = colRed
+                        ws.Cells(r + 1, 3).Interior.Color = colRed
+                        ws.Cells(r + 2, 3).Interior.Color = colRed
+                        isAbnormal = True
+                    End If
+                End If
+                
+                ' --- 異常 C (Tilt): 連續7點 遞增 or 遞減 ---
+                If r <= lastRow - 6 Then
+                    Dim isInc As Boolean, isDec As Boolean
+                    isInc = True: isDec = True
+                    Dim k As Integer
+                    
+                    For k = 0 To 5
+                        If VBA.Val(ws.Cells(r + k + 1, 3)) <= VBA.Val(ws.Cells(r + k, 3)) Then isInc = False
+                        If VBA.Val(ws.Cells(r + k + 1, 3)) >= VBA.Val(ws.Cells(r + k, 3)) Then isDec = False
+                    Next k
+                    
+                    If isInc Or isDec Then
+                        Dim m As Integer
+                        For m = 0 To 6
+                            ws.Cells(r + m, 3).Interior.Color = colPurple
+                        Next m
+                        isAbnormal = True
+                    End If
+                End If
+            Next r
+        End If
+        
+        ' 根據是否異常決定去留
+        If isAbnormal Then
+            ws.Tab.Color = vbRed
+        Else
+            ws.Delete
+        End If
+        
+NextSheet:
+    Next i
+End Sub
+
+Sub Step3_Charting_And_Reporting()
+    ' ==========================================
+    ' Step 3: 排序、繪圖、圖表點變色、彙整
+    ' ==========================================
+    Dim ws As Worksheet
+    Dim wsPeak As Worksheet, wsShift As Worksheet, wsTilt As Worksheet
+    Dim chtObj As ChartObject, myChart As Chart
+    Dim lastRow As Long, r As Long
+    Dim rngTime As Range
+    Dim topPeak As Double, topShift As Double, topTilt As Double
+    Dim arrVal As Variant, arrTar As Variant, arrSig As Variant
+    Dim ptStatus() As Integer ' 1=A, 2=B, 3=C
+    Dim ptCount As Long
+    
+    Set wsPeak = wbTarget.Sheets("Peak")
+    Set wsShift = wbTarget.Sheets("Shift")
+    Set wsTilt = wbTarget.Sheets("Tilt")
+    
+    topPeak = 10: topShift = 10: topTilt = 10
+    
+    For Each ws In wbTarget.Worksheets
+        ' 僅處理紅色分頁 (且非彙整頁)
+        If ws.Tab.Color = vbRed And ws.Name <> "Peak" And ws.Name <> "Shift" And ws.Name <> "Tilt" Then
+            
+            lastRow = ws.Cells(ws.Rows.Count, "D").End(xlUp).Row
+            If lastRow < 2 Then GoTo ContinueLoop
+            
+            ' 1. 時間排序 (升冪)
+            ws.Sort.SortFields.Clear
+            ws.Sort.SortFields.Add Key:=ws.Range("D2:D" & lastRow), SortOn:=xlSortOnValues, Order:=xlAscending
+            With ws.Sort
+                .SetRange ws.Range("A1:L" & lastRow)
+                .Header = xlYes
+                .Apply
+            End With
+            
+            ' 2. 建立散佈圖
+            ' 寬度 35cm (~992pt), 高度 18cm (~510pt)
+            Set chtObj = ws.ChartObjects.Add(Left:=50, Top:=50, Width:=992, Height:=510)
+            Set myChart = chtObj.Chart
+            myChart.ChartType = xlXYScatterLines
+            
+            Set rngTime = ws.Range("D2:D" & lastRow)
+            
+            ' 3. Series 1: Data
+            With myChart.SeriesCollection.NewSeries
+                .Name = "DATA"
+                .XValues = rngTime
+                .Values = ws.Range("C2:C" & lastRow)
+                .Format.Line.Visible = msoTrue
+                .Format.Line.ForeColor.RGB = vbBlue
+                .Format.Line.Weight = 1.5
+                .MarkerStyle = xlMarkerStyleCircle
+                .MarkerSize = 4
+                .MarkerBackgroundColor = vbBlue
+                .MarkerForegroundColor = vbBlue
+            End With
+            
+            ' 4. 輔助線 (Target, Specs, Limits)
+            Call AddRefLine(myChart, rngTime, ws.Range("J2:J" & lastRow), "Target", vbBlack, 0)   ' Black Dash
+            Call AddRefLine(myChart, rngTime, ws.Range("H2:H" & lastRow), "USL", vbRed, 0)        ' Red Dash
+            Call AddRefLine(myChart, rngTime, ws.Range("I2:I" & lastRow), "LSL", vbRed, 0)        ' Red Dash
+            Call AddRefLine(myChart, rngTime, ws.Range("K2:K" & lastRow), "UCL", RGB(0, 176, 80), 0) ' Green Dash
+            Call AddRefLine(myChart, rngTime, ws.Range("L2:L" & lastRow), "LCL", RGB(0, 176, 80), 0) ' Green Dash
+            
+            ' 5. 格式設定
+            myChart.HasTitle = True
+            myChart.ChartTitle.Text = ws.Cells(2, 1).Value & " " & ws.Cells(2, 2).Value
+            
+            ' Y軸: SpecL ~ SpecH
+            With myChart.Axes(xlValue)
+                .MinimumScale = ws.Cells(2, 9).Value ' Spec Low
+                .MaximumScale = ws.Cells(2, 8).Value ' Spec High
+                .HasTitle = True
+                .AxisTitle.Text = "DATA_VALUE"
+            End With
+            
+            ' X軸: 日期, 直向, 刻度 0.1 / 0.02
+            With myChart.Axes(xlCategory)
+                .TickLabels.NumberFormat = "mm/dd"
+                .TickLabels.Orientation = 90
+                .MajorUnit = 0.1
+                .MinorUnit = 0.02
+                .HasTitle = True
+                .AxisTitle.Text = "UPDATE_TIME"
+            End With
+            
+            ' 6. 異常點判定與圖表變色 (陣列運算加速)
+            Dim isTypeA As Boolean, isTypeB As Boolean, isTypeC As Boolean
+            isTypeA = False: isTypeB = False: isTypeC = False
+            
+            ' 讀取資料至陣列
+            If lastRow = 2 Then
+                ReDim arrVal(1 To 1, 1 To 1): arrVal(1, 1) = ws.Cells(2, 3).Value
+                ReDim arrTar(1 To 1, 1 To 1): arrTar(1, 1) = ws.Cells(2, 10).Value
+                ReDim arrSig(1 To 1, 1 To 1): arrSig(1, 1) = ws.Cells(2, 7).Value
+            Else
+                arrVal = ws.Range("C2:C" & lastRow).Value
+                arrTar = ws.Range("J2:J" & lastRow).Value
+                arrSig = ws.Range("G2:G" & lastRow).Value
+            End If
+            
+            ptCount = UBound(arrVal, 1)
+            ReDim ptStatus(1 To ptCount) ' 0:None, 1:A, 2:B, 3:C
+            
+            ' 邏輯判斷迴圈
+            For r = 1 To ptCount
+                Dim v As Double, t As Double, s As Double
+                v = VBA.Val(arrVal(r, 1))
+                t = VBA.Val(arrTar(r, 1))
+                s = VBA.Val(arrSig(r, 1))
+                
+                ' Rule A (Peak) -> 橘色
+                If VBA.Abs(v - t) > (2 * s) Then
+                    If ptStatus(r) < 1 Then ptStatus(r) = 1
+                    isTypeA = True
+                End If
+                
+                ' Rule B (Shift) -> 紅色
+                If r <= ptCount - 2 Then
+                    Dim v2 As Double, v3 As Double
+                    Dim t2 As Double, t3 As Double
+                    Dim s2 As Double, s3 As Double
+                    
+                    v2 = VBA.Val(arrVal(r + 1, 1)): v3 = VBA.Val(arrVal(r + 2, 1))
+                    t2 = VBA.Val(arrTar(r + 1, 1)): t3 = VBA.Val(arrTar(r + 2, 1))
+                    s2 = VBA.Val(arrSig(r + 1, 1)): s3 = VBA.Val(arrSig(r + 2, 1))
+                    
+                    If VBA.Abs(v - t) > 1.5 * s And VBA.Abs(v2 - t2) > 1.5 * s2 And VBA.Abs(v3 - t3) > 1.5 * s3 Then
+                        ptStatus(r) = 2: ptStatus(r + 1) = 2: ptStatus(r + 2) = 2
+                        isTypeB = True
+                    End If
+                End If
+                
+                ' Rule C (Tilt) -> 紫色
+                If r <= ptCount - 6 Then
+                    Dim isInc As Boolean, isDec As Boolean
+                    isInc = True: isDec = True
+                    Dim k As Integer
+                    For k = 0 To 5
+                        If VBA.Val(arrVal(r + k + 1, 1)) <= VBA.Val(arrVal(r + k, 1)) Then isInc = False
+                        If VBA.Val(arrVal(r + k + 1, 1)) >= VBA.Val(arrVal(r + k, 1)) Then isDec = False
+                    Next k
+                    
+                    If isInc Or isDec Then
+                        Dim m As Integer
+                        For m = 0 To 6
+                            ptStatus(r + m) = 3
+                        Next m
+                        isTypeC = True
+                    End If
+                End If
+            Next r
+            
+            ' 應用顏色到圖表點 (一次性處理)
+            Dim serData As Series
+            Set serData = myChart.SeriesCollection(1)
+            Dim pts As Points
+            Set pts = serData.Points
+            Dim i As Long
+            
+            For i = 1 To ptCount
+                If ptStatus(i) > 0 Then
+                    With pts(i)
+                        .MarkerSize = 8 ' 放大
+                        Select Case ptStatus(i)
+                            Case 1: .MarkerBackgroundColor = RGB(255, 165, 0): .MarkerForegroundColor = RGB(255, 165, 0)
+                            Case 2: .MarkerBackgroundColor = vbRed: .MarkerForegroundColor = vbRed
+                            Case 3: .MarkerBackgroundColor = RGB(112, 48, 160): .MarkerForegroundColor = RGB(112, 48, 160)
+                        End Select
+                    End With
+                End If
+            Next i
+            
+            ' 7. 複製到彙整頁
+            If isTypeA Then
+                Call CopyChartToSheet(chtObj, wsPeak, topPeak)
+                CountPeak_N = CountPeak_N + 1
+            End If
+            If isTypeB Then
+                Call CopyChartToSheet(chtObj, wsShift, topShift)
+                CountShift_O = CountShift_O + 1
+            End If
+            If isTypeC Then
+                Call CopyChartToSheet(chtObj, wsTilt, topTilt)
+                CountTilt_P = CountTilt_P + 1
+            End If
+            
+        End If
+ContinueLoop:
+    Next ws
+    
+    wsPeak.Activate
+End Sub
+
+' --- 輔助函式 ---
+
+Sub AddRefLine(cht As Chart, rngX As Range, rngY As Range, sName As String, col As Long, ByVal dummy As Integer)
+    ' dummy 參數僅為區隔，避免參數簽章問題
+    With cht.SeriesCollection.NewSeries
+        .Name = sName
+        .XValues = rngX
+        .Values = rngY
+        .Format.Line.ForeColor.RGB = col
+        .Format.Line.Weight = 2.5
+        .Format.Line.DashStyle = msoLineDash
+        .MarkerStyle = xlMarkerStyleNone
+    End With
+End Sub
+
+Sub CopyChartToSheet(srcChtObj As ChartObject, destSheet As Worksheet, ByRef topPos As Double)
+    srcChtObj.Chart.ChartArea.Copy
+    destSheet.Paste
+    ' 定位
+    With destSheet.ChartObjects(destSheet.ChartObjects.Count)
+        .Top = topPos
+        .Left = 10
+        topPos = topPos + .Height + 20
+    End With
+End Sub
