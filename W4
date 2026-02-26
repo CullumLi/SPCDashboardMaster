@@ -1,0 +1,181 @@
+Sub MasterDataProcessor_Advanced()
+    ' === 宣告變數 ===
+    Dim fd As FileDialog, fdSave As FileDialog
+    Dim wb As Workbook
+    Dim wsOut As Worksheet, ws As Worksheet
+    Dim sheetNames As Variant
+    Dim shIdx As Integer
+    Dim lastRow As Long, r As Long
+    Dim valA As String
+    Dim mode As Integer, countIdx As Integer
+    Dim pmCount As Long
+    Dim rRisk As Long, rArea As Long, rHigh As Long, rGen As Long
+    
+    ' 存檔相關變數
+    Dim saveFolder As String, saveFileName As String, saveFullPath As String
+    Dim fso As Object, ext As String
+    
+    ' === 步驟 0: 開啟小視窗選擇欲執行的檔案 ===
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "請選擇要處理的EXCEL檔案 (VBA大師專用)"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xls; *.xlsx; *.xlsm; *.xlsb"
+    
+    If fd.Show = -1 Then
+        ' 強制關閉畫面更新、警告與事件，提升效能與穩定度
+        Application.ScreenUpdating = False
+        Application.DisplayAlerts = False
+        Application.EnableEvents = False
+        Application.Calculation = xlCalculationManual
+        
+        On Error GoTo ErrorHandler ' 啟動大師級錯誤防護機制
+        Set wb = Workbooks.Open(fd.SelectedItems(1))
+    Else
+        MsgBox "您已取消選擇檔案，程式結束。", vbExclamation, "VBA大師提示"
+        Exit Sub
+    End If
+
+    ' === 步驟 1: 設定目標表與輸入表 ===
+    Set wsOut = wb.Sheets("工程管制巡檢表")
+    sheetNames = Array("ACS", "ESS", "GCS", "WTS")
+    
+    ' 清空目標表舊資料(防呆)
+    wsOut.Range("A5:H14, A16:H30, A32:H64, A66:H113, B115:B118").ClearContents
+    
+    ' 初始化輸出列位
+    rRisk = 5   ' 對應 5~14
+    rArea = 16  ' 對應 16~30
+    rHigh = 32  ' 對應 32~64
+    rGen = 66   ' 對應 66~113
+
+    ' === 步驟 2~6: 逐表掃描處理 ===
+    For shIdx = LBound(sheetNames) To UBound(sheetNames)
+        Set ws = wb.Sheets(sheetNames(shIdx))
+        lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+        
+        mode = 0
+        countIdx = 1
+        pmCount = 0
+        
+        For r = 1 To lastRow + 1
+            valA = Trim(ws.Cells(r, 1).Value) ' 去除空白避免判斷錯誤
+            
+            ' 判斷區塊標題切換
+            If valA = "※ 非常態作業 [ By Risk ]-> F12A非常態作業管控" Then
+                mode = 1: countIdx = 1: GoTo NextRow
+            ElseIf valA = "※ 非常態作業 [ By Area ]-> F12A非常態作業管控" Then
+                mode = 2: countIdx = 1: GoTo NextRow
+            ElseIf valA = "※ 高風險作業" Then
+                mode = 3: countIdx = 1: GoTo NextRow
+            ElseIf valA = "※ 一般工程" Then
+                mode = 4: countIdx = 1: GoTo NextRow
+            ElseIf valA = "※ 自主 PM & 槽車灌充作業" Then
+                mode = 5: GoTo NextRow
+            ElseIf mode = 5 And valA = "" Then
+                mode = 0 ' 遇到空白列，停止計算 PM
+            End If
+            
+            ' 依照目前 mode 寫入資料
+            If mode > 0 And valA <> "" Then
+                Select Case mode
+                    Case 1 ' Risk
+                        If rRisk <= 14 Then
+                            wsOut.Range("B" & rRisk & ":H" & rRisk).Value = ws.Range("A" & r & ":G" & r).Value
+                            wsOut.Range("A" & rRisk).Value = sheetNames(shIdx) & "-" & countIdx
+                            countIdx = countIdx + 1: rRisk = rRisk + 1
+                        End If
+                    Case 2 ' Area
+                        If rArea <= 30 Then
+                            wsOut.Range("B" & rArea & ":H" & rArea).Value = ws.Range("A" & r & ":G" & r).Value
+                            wsOut.Range("A" & rArea).Value = sheetNames(shIdx) & "-" & countIdx
+                            countIdx = countIdx + 1: rArea = rArea + 1
+                        End If
+                    Case 3 ' High Risk
+                        If rHigh <= 64 Then
+                            wsOut.Range("B" & rHigh & ":H" & rHigh).Value = ws.Range("A" & r & ":G" & r).Value
+                            wsOut.Range("A" & rHigh).Value = sheetNames(shIdx) & "-" & countIdx
+                            countIdx = countIdx + 1: rHigh = rHigh + 1
+                        End If
+                    Case 4 ' General
+                        If rGen <= 113 Then
+                            wsOut.Range("B" & rGen & ":H" & rGen).Value = ws.Range("A" & r & ":G" & r).Value
+                            wsOut.Range("A" & rGen).Value = sheetNames(shIdx) & "-" & countIdx
+                            countIdx = countIdx + 1: rGen = rGen + 1
+                        End If
+                    Case 5 ' 自主 PM
+                        pmCount = pmCount + 1
+                End Select
+            End If
+NextRow:
+        Next r
+        
+        ' 將各分頁的 PM 總數寫入 B115~B118
+        wsOut.Range("B" & (115 + shIdx)).Value = pmCount
+    Next shIdx
+
+    ' === 步驟 7~11: 工程管制巡檢表 運算 ===
+    With wsOut
+        Dim wf As WorksheetFunction
+        Set wf = Application.WorksheetFunction
+        
+        .Range("C115").Value = wf.Sum(.Range("B115:B118"))
+        .Range("I121").Value = .Range("C115").Value
+        .Range("C126").Value = wf.Sum(.Range("C121:C124")) - .Range("C124").Value
+        
+        .Range("F121").Value = wf.CountA(.Range("B5:B14")) + wf.CountA(.Range("B16:B30")) + wf.CountA(.Range("B32:B64"))
+        .Range("F122").Value = wf.CountA(.Range("H66:H113"))
+        .Range("G121").Value = .Range("F121").Value + .Range("F122").Value
+        
+        .Range("H121").Value = wf.Sum(.Range("H5:H14")) + wf.Sum(.Range("H16:H30")) + wf.Sum(.Range("H32:H64")) + wf.Sum(.Range("H66:H113"))
+        
+        If .Range("C126").Value <> 0 Then
+            .Range("C127").Value = (.Range("H121").Value / .Range("C126").Value) / 6
+        Else
+            .Range("C127").Value = 0
+        End If
+        .Range("C127").NumberFormat = "0.00%"
+        
+        .Range("G123").Value = wf.CountIf(.Range("I5:I114"), "合格")
+        .Range("I123").Value = wf.CountIf(.Range("I5:I114"), "不合格")
+    End With
+
+    ' === 步驟 12: 開啟小視窗選擇儲存路徑並另存新檔 ===
+    ' 恢復畫面更新以便顯示對話框
+    Application.ScreenUpdating = True 
+    
+    Set fdSave = Application.FileDialog(msoFileDialogFolderPicker)
+    fdSave.Title = "資料處理完畢！請選擇存檔路徑 (VBA大師專用)"
+    
+    If fdSave.Show = -1 Then
+        saveFolder = fdSave.SelectedItems(1)
+        
+        ' 計算明天日期並格式化為 YYYYMMDD
+        saveFileName = Format(Date + 1, "yyyymmdd") & "-FE12A_2 每日工程施工管制表"
+        
+        ' 取得原始檔案副檔名 (確保格式一致)
+        Set fso = CreateObject("Scripting.FileSystemObject")
+        ext = fso.GetExtensionName(wb.Name)
+        
+        ' 組合完整路徑
+        saveFullPath = saveFolder & "\" & saveFileName & "." & ext
+        
+        ' 執行另存新檔
+        Application.DisplayAlerts = False ' 若有同名檔案直接覆蓋不跳警告
+        wb.SaveAs Filename:=saveFullPath, FileFormat:=wb.FileFormat
+        
+        MsgBox "大師報告：處理完美結束！" & vbCrLf & "檔案已成功儲存至：" & vbCrLf & saveFullPath, vbInformation, "VBA大師"
+    Else
+        MsgBox "大師報告：資料已處理完畢！" & vbCrLf & "但您取消了路徑選擇，檔案【尚未】另存新檔，請記得手動存檔喔。", vbExclamation, "VBA大師"
+    End If
+
+    ' === 結束常式：恢復系統設定 ===
+ErrorHandler:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    
+    If Err.Number <> 0 Then
+        MsgBox "執行過程中發生意外！" & vbCrLf & "錯誤代碼：" & Err.Number & vbCrLf & "錯誤描述：" & Err.Description, vbCritical, "VBA大師警告"
+    End If
+End Sub
