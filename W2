@@ -1,0 +1,190 @@
+Sub Master_Inspection_Process()
+    ' 關閉畫面更新與警告，進入「強制執行」全速模式
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    Dim fd As FileDialog
+    Dim wbTarget As Workbook
+    Dim wsDest As Worksheet, wsSrc As Worksheet
+    Dim srcSheets As Variant
+    Dim shtName As String
+    Dim i As Integer, r As Long, lastRow As Long
+    Dim pmCount As Integer
+    
+    ' --- 1. 開啟小視窗選擇檔案 ---
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "VBA大師提醒您：請選擇要處理的工程管制巡檢表 EXCEL 檔案"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel 檔案", "*.xls; *.xlsx; *.xlsm; *.xlsb"
+    
+    If fd.Show = -1 Then
+        Set wbTarget = Workbooks.Open(fd.SelectedItems(1))
+    Else
+        MsgBox "未選擇任何檔案，程式結束執行。", vbExclamation
+        GoTo CleanExit
+    End If
+    
+    ' 確保強制執行：若遇到缺漏工作表等錯誤，跳過繼續執行
+    On Error Resume Next
+    Set wsDest = wbTarget.Sheets("工程管制巡檢表")
+    If wsDest Is Nothing Then
+        MsgBox "找不到名稱為『工程管制巡檢表』的Sheet，請確認檔案內容！", vbCritical
+        wbTarget.Close False
+        GoTo CleanExit
+    End If
+    On Error GoTo ErrorHandler ' 恢復正常的錯誤捕捉
+
+    ' 定義來源工作表與各區塊目的端的起始列
+    srcSheets = Array("ACS", "ESS", "GCS", "WTS")
+    Dim dRow1 As Integer: dRow1 = 5   ' 區間1 Max: 14
+    Dim dRow2 As Integer: dRow2 = 16  ' 區間2 Max: 30
+    Dim dRow3 As Integer: dRow3 = 32  ' 區間3 Max: 64
+    Dim dRow4 As Integer: dRow4 = 66  ' 區間4 Max: 113
+    
+    Dim cnt1 As Integer, cnt2 As Integer, cnt3 As Integer, cnt4 As Integer
+    Dim start1 As Long, start2 As Long, start3 As Long, start4 As Long, start5 As Long
+
+    ' --- 2~6. 處理四個來源工作表 ---
+    For i = LBound(srcSheets) To UBound(srcSheets)
+        shtName = srcSheets(i)
+        
+        On Error Resume Next
+        Set wsSrc = wbTarget.Sheets(shtName)
+        On Error GoTo ErrorHandler
+        
+        If Not wsSrc Is Nothing Then
+            lastRow = wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+            cnt1 = 1: cnt2 = 1: cnt3 = 1: cnt4 = 1
+            pmCount = 0
+            
+            ' 尋找各區塊關鍵字所在的列數
+            start1 = FindKeyRow(wsSrc, "※ 非常態作業 [ By Risk ]-> F12A非常態作業管控")
+            start2 = FindKeyRow(wsSrc, "※ 非常態作業 [ By Area ]-> F12A非常態作業管控")
+            start3 = FindKeyRow(wsSrc, "※ 高風險作業")
+            start4 = FindKeyRow(wsSrc, "※ 一般工程") ' 已修正此處邏輯
+            start5 = FindKeyRow(wsSrc, "※ 自主 PM & 槽車灌充作業")
+            
+            ' [任務 2] By Risk
+            If start1 > 0 And start2 > 0 Then
+                For r = start1 + 1 To start2 - 1
+                    If Trim(wsSrc.Cells(r, "F").Value) <> "" And dRow1 <= 14 Then
+                        wsDest.Range("B" & dRow1 & ":H" & dRow1).Value = wsSrc.Range("F" & r & ":L" & r).Value
+                        wsDest.Range("A" & dRow1).Value = shtName & "-" & cnt1
+                        dRow1 = dRow1 + 1: cnt1 = cnt1 + 1
+                    End If
+                Next r
+            End If
+            
+            ' [任務 3] By Area
+            If start2 > 0 And start3 > 0 Then
+                For r = start2 + 1 To start3 - 1
+                    If Trim(wsSrc.Cells(r, "F").Value) <> "" And dRow2 <= 30 Then
+                        wsDest.Range("B" & dRow2 & ":H" & dRow2).Value = wsSrc.Range("F" & r & ":L" & r).Value
+                        wsDest.Range("A" & dRow2).Value = shtName & "-" & cnt2
+                        dRow2 = dRow2 + 1: cnt2 = cnt2 + 1
+                    End If
+                Next r
+            End If
+            
+            ' [任務 4] 高風險作業
+            If start3 > 0 And start4 > 0 Then
+                For r = start3 + 1 To start4 - 1
+                    If Trim(wsSrc.Cells(r, "F").Value) <> "" And dRow3 <= 64 Then
+                        wsDest.Range("B" & dRow3 & ":H" & dRow3).Value = wsSrc.Range("F" & r & ":L" & r).Value
+                        wsDest.Range("A" & dRow3).Value = shtName & "-" & cnt3
+                        dRow3 = dRow3 + 1: cnt3 = cnt3 + 1
+                    End If
+                Next r
+            End If
+            
+            ' [任務 5] 一般工程
+            If start4 > 0 And start5 > 0 Then
+                For r = start4 + 1 To start5 - 1
+                    If Trim(wsSrc.Cells(r, "F").Value) <> "" And dRow4 <= 113 Then
+                        wsDest.Range("B" & dRow4 & ":H" & dRow4).Value = wsSrc.Range("F" & r & ":L" & r).Value
+                        wsDest.Range("A" & dRow4).Value = shtName & "-" & cnt4
+                        dRow4 = dRow4 + 1: cnt4 = cnt4 + 1
+                    End If
+                Next r
+            End If
+            
+            ' [任務 6] 自主 PM & 槽車灌充作業 (依序寫入 B115~B118)
+            If start5 > 0 Then
+                r = start5 + 1
+                ' 往下找直到A欄完全空白
+                Do While Trim(wsSrc.Cells(r, "A").Value) <> "" Or Trim(wsSrc.Cells(r, "F").Value) <> ""
+                    If Trim(wsSrc.Cells(r, "F").Value) <> "" Then pmCount = pmCount + 1
+                    r = r + 1
+                    If r > lastRow + 50 Then Exit Do ' 防呆機制，避免死迴圈
+                Loop
+            End If
+            wsDest.Cells(115 + i, "B").Value = pmCount
+            
+        End If
+        Set wsSrc = Nothing ' 釋放物件
+    Next i
+    
+    ' --- 7~11. 針對「工程管制巡檢表」進行數值運算 ---
+    Dim wf As WorksheetFunction
+    Set wf = Application.WorksheetFunction
+    
+    With wsDest
+        ' [任務 7] 數值加總
+        Dim sumB115 As Double: sumB115 = wf.Sum(.Range("B115:B118"))
+        .Range("C115").Value = sumB115
+        .Range("I121").Value = sumB115
+        .Range("C126").Value = wf.Sum(.Range("C121:C124")) - Val(.Range("C124").Value)
+        
+        ' [任務 8] 計算有文字的項目 (CountA)
+        Dim countF121 As Double, countF122 As Double
+        countF121 = wf.CountA(.Range("B5:B14")) + wf.CountA(.Range("B16:B30")) + wf.CountA(.Range("B32:B64"))
+        countF122 = wf.CountA(.Range("H66:H113"))
+        .Range("F121").Value = countF121
+        .Range("F122").Value = countF122
+        .Range("G121").Value = countF121 + countF122
+        
+        ' [任務 9] 數字加總
+        .Range("H121").Value = wf.Sum(.Range("H5:H14, H16:H30, H32:H64, H66:H113"))
+        
+        ' [任務 10] 計算百分比並填寫格式
+        Dim valC126 As Double, valH121 As Double
+        valC126 = Val(.Range("C126").Value)
+        valH121 = Val(.Range("H121").Value)
+        If valC126 <> 0 Then
+            .Range("C127").Value = (valH121 / valC126) / 6
+        Else
+            .Range("C127").Value = 0 ' 防止除以零錯誤
+        End If
+        .Range("C127").NumberFormat = "0.00%"
+        
+        ' [任務 11] 計算合格與不合格 (精確比對)
+        .Range("G123").Value = wf.CountIf(.Range("I5:I114"), "合格")
+        .Range("I123").Value = wf.CountIf(.Range("I5:I114"), "不合格")
+    End With
+
+    ' 完成提示
+    MsgBox "巨集執行完畢！資料已成功提取與運算。", vbInformation, "VBA大師"
+
+CleanExit:
+    ' 恢復應用程式設定
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "執行過程中發生未預期的錯誤。" & vbCrLf & "錯誤代碼: " & Err.Number & vbCrLf & "錯誤描述: " & Err.Description, vbCritical, "系統警告"
+    Resume CleanExit
+End Sub
+
+' 輔助函數：精準尋找關鍵字所在的列號
+Function FindKeyRow(ws As Worksheet, searchStr As String) As Long
+    Dim rng As Range
+    Set rng = ws.Columns("A").Find(What:=searchStr, LookIn:=xlValues, LookAt:=xlPart)
+    If Not rng Is Nothing Then
+        FindKeyRow = rng.Row
+    Else
+        FindKeyRow = 0
+    End If
+End Function
