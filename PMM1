@@ -1,0 +1,158 @@
+Sub AutoAssignTasksAndBalance()
+    Dim fd As FileDialog
+    Dim sourceFilePath As String
+    Dim wb As Workbook
+    Dim ws As Worksheet, wsCount As Worksheet
+    Dim lastRow As Long, i As Long, k As Long
+    Dim taskName As String, assigned As Boolean
+    Dim owners As Variant, keywords As Variant, kwList() As String, kw As Variant
+    Dim counts(0 To 9) As Long
+    Dim unassignedRows As Collection
+    Dim minCount As Long, minIndex As Long, rIndex As Variant
+    Dim reportDateText As String, yyyymm As String, cell As Range
+    Dim saveFolderPicker As FileDialog, savePath As String
+    
+    ' --- 1. 開啟小視窗，選擇欲執行的檔案 ---
+    sourceFilePath = Application.GetOpenFilename("Excel 檔案 (*.xls*), *.xls*", , "請選擇要處理的原始檔案")
+    If sourceFilePath = "False" Then
+        MsgBox "您取消了選擇檔案，巨集結束。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' 關閉螢幕更新與警告，提升執行速度
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    ' 開啟選擇的檔案
+    Set wb = Workbooks.Open(sourceFilePath)
+    
+    ' 確認是否存在指定工作表
+    On Error Resume Next
+    Set ws = wb.Sheets("1.FOCPMM_SUM")
+    On Error GoTo 0
+    If ws Is Nothing Then
+        MsgBox "找不到工作表 '1.FOCPMM_SUM'，請確認檔案是否正確。", vbCritical
+        wb.Close False
+        Application.ScreenUpdating = True
+        Exit Sub
+    End If
+
+    ' --- 2. 抓取第4列的報表時間 ---
+    yyyymm = Format(Date, "yyyymm") ' 預設為當月
+    For Each cell In ws.Range("A4:Z4")
+        If IsDate(cell.Value) Then
+            yyyymm = Format(cell.Value, "yyyymm")
+            Exit For
+        ElseIf cell.Text Like "*20[0-9][0-9]*[0-9][0-9]*" Then
+            ' 若為字串形式的日期，嘗試強制轉換
+            On Error Resume Next
+            yyyymm = Format(CDate(cell.Text), "yyyymm")
+            On Error GoTo 0
+            Exit For
+        End If
+    Next cell
+
+    ' --- 3. 負責人與關鍵字定義 ---
+    owners = Array("謝孟廷", "王家緯", "李明鎮", "張永慶", "許家豪", "馮祖盛", "黃文忠", "黃哲明", "楊承德", "戴琦哲")
+    keywords = Array("FM-200,Fire,Hydran,Sprinkler", _
+                     "DCC,MAU,FFU", _
+                     "ALK,AT,GEN,EXH,MB", _
+                     "Boiler,CT,Chiller", _
+                     "AHU_PCC,EF,Fan-coil", _
+                     "Kitchen,SOL,VOC,THC", _
+                     "FMS,IC,NH3,TOC,TS", _
+                     "Exh,HVAC", _
+                     "CR,DEX_REX,RCU_OAU", _
+                     "HVAC-Pump,LNG,Propipe,Dosing")
+                     
+    Set unassignedRows = New Collection
+    
+    ' 填寫 G6 標題
+    ws.Range("G6").Value = "負責人"
+    
+    ' 找到最後一列 (以C欄 TASKNAME 為基準)
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    
+    ' --- 4. 依照規則分類 (第7列開始) ---
+    For i = 7 To lastRow
+        taskName = ws.Cells(i, 3).Value ' C欄是 TASKNAME
+        assigned = False
+        
+        If Trim(taskName) <> "" Then
+            For k = LBound(owners) To UBound(owners)
+                kwList = Split(keywords(k), ",")
+                For Each kw In kwList
+                    ' 使用 vbTextCompare 進行不區分大小寫的比對
+                    If InStr(1, taskName, Trim(kw), vbTextCompare) > 0 Then
+                        ws.Cells(i, 7).Value = owners(k)
+                        counts(k) = counts(k) + 1
+                        assigned = True
+                        Exit For
+                    End If
+                Next kw
+                If assigned Then Exit For
+            Next k
+            
+            ' 如果沒配對到，記錄列號準備進行平均分配
+            If Not assigned Then
+                unassignedRows.Add i
+            End If
+        End If
+    Next i
+
+    ' --- 5. 平均分配未定義的 TASKNAME ---
+    For Each rIndex In unassignedRows
+        minCount = 2147483647 ' 初始設為極大值
+        minIndex = 0
+        
+        ' 找出目前負責專案數最少的人
+        For k = LBound(counts) To UBound(counts)
+            If counts(k) < minCount Then
+                minCount = counts(k)
+                minIndex = k
+            End If
+        Next k
+        
+        ' 將此任務指派給數量最少的人，並更新計數器
+        ws.Cells(rIndex, 7).Value = owners(minIndex)
+        counts(minIndex) = counts(minIndex) + 1
+    Next rIndex
+
+    ' --- 6. 新增並填寫 FOCPMM_COUNT 工作表 ---
+    On Error Resume Next
+    Set wsCount = wb.Sheets("FOCPMM_COUNT")
+    On Error GoTo 0
+    If Not wsCount Is Nothing Then wsCount.Delete ' 如果已存在則先刪除
+    
+    Set wsCount = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+    wsCount.Name = "FOCPMM_COUNT"
+    
+    wsCount.Range("A1").Value = "負責人"
+    wsCount.Range("B1").Value = "本月份Total負責結案項目"
+    
+    ' 填寫統計數據
+    For k = LBound(owners) To UBound(owners)
+        wsCount.Cells(k + 2, 1).Value = owners(k)
+        wsCount.Cells(k + 2, 2).Value = counts(k)
+    Next k
+    
+    ' 自動調整欄寬
+    wsCount.Columns("A:B").AutoFit
+
+    ' --- 7. 選擇儲存路徑並另存新檔 ---
+    Application.ScreenUpdating = True
+    
+    Set saveFolderPicker = Application.FileDialog(msoFileDialogFolderPicker)
+    saveFolderPicker.Title = "請選擇儲存路徑"
+    
+    If saveFolderPicker.Show = -1 Then
+        savePath = saveFolderPicker.SelectedItems(1)
+        ' 另存新檔 (Format 51 = xlsx)
+        wb.SaveAs Filename:=savePath & "\" & yyyymm & "_ACS_PMM分配.xlsx", FileFormat:=51
+        MsgBox "處理完成！資料已平均分配。" & vbCrLf & "檔案已儲存至：" & vbCrLf & savePath & "\" & yyyymm & "_ACS_PMM分配.xlsx", vbInformation
+    Else
+        MsgBox "任務已處理完畢，但您未選擇儲存路徑，請記得手動儲存檔案！", vbExclamation
+    End If
+    
+    Application.DisplayAlerts = True
+End Sub
