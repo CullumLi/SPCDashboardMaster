@@ -1,0 +1,145 @@
+Sub AssignTasksAndSort()
+    Dim fd As FileDialog
+    Dim sourceFilePath As String
+    Dim wb As Workbook
+    Dim ws As Worksheet, wsCount As Worksheet
+    Dim lastRow As Long, i As Long, k As Long
+    Dim taskName As String, assigned As Boolean
+    Dim owners As Variant, keywords As Variant, kwList() As String, kw As Variant
+    Dim counts(0 To 9) As Long
+    Dim reportDateText As String, yyyymm As String, cell As Range
+    Dim saveFolderPicker As FileDialog, savePath As String
+    
+    ' --- 1. 開啟小視窗，選擇欲執行的檔案 ---
+    sourceFilePath = Application.GetOpenFilename("Excel 檔案 (*.xls*), *.xls*", , "請選擇要處理的原始檔案")
+    If sourceFilePath = "False" Then
+        MsgBox "您取消了選擇檔案，巨集結束。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' 關閉螢幕更新與警告，提升執行速度
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    Set wb = Workbooks.Open(sourceFilePath)
+    
+    ' 確認是否存在指定工作表
+    On Error Resume Next
+    Set ws = wb.Sheets("1.FOCPMM_SUM")
+    On Error GoTo 0
+    If ws Is Nothing Then
+        MsgBox "找不到工作表 '1.FOCPMM_SUM'，請確認檔案是否正確。", vbCritical
+        wb.Close False
+        Application.ScreenUpdating = True
+        Exit Sub
+    End If
+
+    ' --- 2. 抓取第4列的報表時間 ---
+    yyyymm = Format(Date, "yyyymm") ' 預設為當月，以防萬一沒抓到日期
+    For Each cell In ws.Range("A4:Z4")
+        If IsDate(cell.Value) Then
+            yyyymm = Format(cell.Value, "yyyymm")
+            Exit For
+        ElseIf cell.Text Like "*20[0-9][0-9]*[0-9][0-9]*" Then
+            On Error Resume Next
+            yyyymm = Format(CDate(cell.Text), "yyyymm")
+            On Error GoTo 0
+            Exit For
+        End If
+    Next cell
+
+    ' --- 3. 負責人與關鍵字定義 ---
+    owners = Array("謝孟廷", "王家緯", "李明鎮", "張永慶", "許家豪", "馮祖盛", "黃文忠", "黃哲明", "楊承德", "戴琦哲")
+    keywords = Array("FM-200,Fire,Hydran,Sprinkler", _
+                     "DCC,MAU,FFU", _
+                     "ALK,AT,GEN,EXH,MB", _
+                     "Boiler,CT,Chiller", _
+                     "AHU_PCC,EF,Fan-coil", _
+                     "Kitchen,SOL,VOC,THC", _
+                     "FMS,IC,NH3,TOC,TS", _
+                     "Exh,HVAC", _
+                     "CR,DEX_REX,RCU_OAU", _
+                     "HVAC-Pump,LNG,Propipe,Dosing")
+                     
+    ' 填寫 G6 標題
+    ws.Range("G6").Value = "負責人"
+    
+    ' 找到最後一列 (以C欄 TASKNAME 為基準)
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    
+    ' --- 4. 依照規則分類 (第7列開始)，未定義則留白 ---
+    For i = 7 To lastRow
+        taskName = ws.Cells(i, 3).Value ' C欄是 TASKNAME
+        assigned = False
+        
+        If Trim(taskName) <> "" Then
+            For k = LBound(owners) To UBound(owners)
+                kwList = Split(keywords(k), ",")
+                For Each kw In kwList
+                    If InStr(1, taskName, Trim(kw), vbTextCompare) > 0 Then
+                        ws.Cells(i, 7).Value = owners(k)
+                        counts(k) = counts(k) + 1
+                        assigned = True
+                        Exit For
+                    End If
+                Next kw
+                If assigned Then Exit For
+            Next k
+            
+            ' 若遇到未定義的字元，確保該欄位為空白
+            If Not assigned Then
+                ws.Cells(i, 7).Value = ""
+            End If
+        End If
+    Next i
+
+    ' --- 5. 將資料範圍依據負責人(G欄)進行 A 到 Z 排序 ---
+    ' 針對 A6 到 G 欄最後一列進行排序，包含標題
+    ws.Sort.SortFields.Clear
+    ws.Sort.SortFields.Add Key:=ws.Range("G7:G" & lastRow), _
+        SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+    With ws.Sort
+        .SetRange ws.Range("A6:G" & lastRow)
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .SortMethod = xlPinYin
+        .Apply
+    End With
+
+    ' --- 6. 新增並填寫 FOCPMM_COUNT 工作表 ---
+    On Error Resume Next
+    Set wsCount = wb.Sheets("FOCPMM_COUNT")
+    On Error GoTo 0
+    If Not wsCount Is Nothing Then wsCount.Delete ' 如果已存在則先刪除
+    
+    Set wsCount = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+    wsCount.Name = "FOCPMM_COUNT"
+    
+    wsCount.Range("A1").Value = "負責人"
+    wsCount.Range("B1").Value = "本月份Total負責結案項目"
+    
+    ' 填寫統計數據
+    For k = LBound(owners) To UBound(owners)
+        wsCount.Cells(k + 2, 1).Value = owners(k)
+        wsCount.Cells(k + 2, 2).Value = counts(k)
+    Next k
+    
+    wsCount.Columns("A:B").AutoFit
+
+    ' --- 7. 選擇儲存路徑並另存新檔 ---
+    Application.ScreenUpdating = True
+    
+    Set saveFolderPicker = Application.FileDialog(msoFileDialogFolderPicker)
+    saveFolderPicker.Title = "請選擇儲存路徑"
+    
+    If saveFolderPicker.Show = -1 Then
+        savePath = saveFolderPicker.SelectedItems(1)
+        wb.SaveAs Filename:=savePath & "\" & yyyymm & "_ACS_PMM分配.xlsx", FileFormat:=51
+        MsgBox "處理完成！資料已更新與排序。" & vbCrLf & "檔案已儲存至：" & vbCrLf & savePath & "\" & yyyymm & "_ACS_PMM分配.xlsx", vbInformation
+    Else
+        MsgBox "任務已處理完畢，但您未選擇儲存路徑，請記得手動儲存檔案！", vbExclamation
+    End If
+    
+    Application.DisplayAlerts = True
+End Sub
