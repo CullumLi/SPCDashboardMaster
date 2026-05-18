@@ -1,0 +1,233 @@
+Sub GenerateSPCTrendReport_Final()
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim fileFd As Object
+    Dim xlPath As String
+    
+    ' 1. 開啟檔案選擇視窗
+    Set fileFd = Application.FileDialog(1) ' msoFileDialogFilePicker
+    With fileFd
+        .Title = "請選擇 SPC 統計 Excel 檔案"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xlsx; *.xlsm; *.xls"
+        If .Show = 0 Then Exit Sub
+        xlPath = .SelectedItems(1)
+    End With
+    
+    ' 2. 啟動 Excel
+    On Error Resume Next
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = False
+    Set xlWB = xlApp.Workbooks.Open(xlPath, ReadOnly:=True)
+    On Error GoTo 0
+    
+    ' 3. 獲取前三頁總結數量
+    Dim peakTotal As Long, shiftTotal As Long, tiltTotal As Long
+    peakTotal = GetChartCount(xlWB, "Peak")
+    shiftTotal = GetChartCount(xlWB, "Shift")
+    tiltTotal = GetChartCount(xlWB, "Tilt")
+    
+    ' 4. 收集所有不重複圖表資訊
+    Dim dictCharts As Object
+    Set dictCharts = CreateObject("Scripting.Dictionary")
+    
+    Dim sNames As Variant, sName As Variant
+    sNames = Array("Peak", "Shift", "Tilt")
+    
+    Dim wsSource As Object, chObj As Object
+    Dim chTitle As String
+    
+    For Each sName In sNames
+        Set wsSource = Nothing
+        On Error Resume Next
+        Set wsSource = xlWB.Sheets(sName)
+        On Error GoTo 0
+        
+        If Not wsSource Is Nothing Then
+            For Each chObj In wsSource.ChartObjects
+                ' 獲取圖表標題
+                If chObj.Chart.HasTitle Then
+                    chTitle = chObj.Chart.ChartTitle.Text
+                Else
+                    chTitle = chObj.Name
+                End If
+                
+                ' 避免重複處理同一張圖 (Key 使用標題)
+                If Not dictCharts.Exists(chTitle) Then
+                    ' 儲存 來源分頁名稱 與 圖表在該頁的索引/名稱
+                    dictCharts.Add chTitle, Array(sName, chObj.Name)
+                End If
+            Next chObj
+        End If
+    Next sName
+    
+    ' 5. PowerPoint 建立流程
+    Dim pptPres As Presentation: Set pptPres = ActivePresentation
+    Dim newSlide As Slide
+    Dim sldIdx As Long: sldIdx = pptPres.Slides.Count + 1
+    
+    ' --- Slide 1: Summary ---
+    Set newSlide = pptPres.Slides.Add(sldIdx, 12) ' ppLayoutBlank
+    sldIdx = sldIdx + 1
+    FormatTitle newSlide, "Trend Chart Summary"
+    
+    Dim sumTable As Shape
+    Set sumTable = newSlide.Shapes.AddTable(4, 2, 340, 200, 300, 160)
+    With sumTable.Table
+        FillTableCell .Cell(1, 1), "偏移類型": FillTableCell .Cell(1, 2), "數量"
+        FillTableCell .Cell(2, 1), "Peak":      FillTableCell .Cell(2, 2), CStr(peakTotal)
+        FillTableCell .Cell(3, 1), "Shift":     FillTableCell .Cell(3, 2), CStr(shiftTotal)
+        FillTableCell .Cell(4, 1), "Tilt":      FillTableCell .Cell(4, 2), CStr(tiltTotal)
+    End With
+    
+    ' --- 各圖表細節頁 ---
+    Dim k As Variant, info As Variant
+    Dim rawShtName As String, spacePos As Long
+    Dim wsRaw As Object
+    
+    For Each k In dictCharts.Keys
+        chTitle = CStr(k)
+        info = dictCharts(k)
+        
+        ' 擷取 Raw Data 分頁名稱 (例如從 "10650 XXX" 抓取 "10650")
+        spacePos = InStr(chTitle, " ")
+        If spacePos > 0 Then rawShtName = Left(chTitle, spacePos - 1) Else rawShtName = chTitle
+        
+        Set wsRaw = Nothing
+        On Error Resume Next
+        Set wsRaw = xlWB.Sheets(rawShtName)
+        On Error GoTo 0
+        
+        ' 統計數據
+        Dim rowsCount As Long, pCnt As Long, sCnt As Long, tCnt As Long
+        Dim pP As Double, sP As Double, tP As Double
+        rowsCount = 0: pCnt = 0: sCnt = 0: tCnt = 0
+        
+        If Not wsRaw Is Nothing Then
+            Dim lastRow As Long
+            lastRow = wsRaw.Cells(wsRaw.Rows.Count, 1).End(-4162).Row ' xlUp = -4162
+            If lastRow > 1 Then
+                rowsCount = lastRow - 1
+                pCnt = CountOffset(wsRaw, "Peak", lastRow)
+                sCnt = CountOffset(wsRaw, "Shift", lastRow)
+                tCnt = CountOffset(wsRaw, "Tilt", lastRow)
+                If rowsCount > 0 Then
+                    pP = pCnt / rowsCount: sP = sCnt / rowsCount: tP = tCnt / rowsCount
+                End If
+            End If
+        End If
+        
+        ' 建立投影片
+        Set newSlide = pptPres.Slides.Add(sldIdx, 12)
+        sldIdx = sldIdx + 1
+        FormatTitle newSlide, chTitle
+        
+        ' 複製並貼上圖表 (指定特定分頁的特定圖表，避免重複)
+        xlWB.Sheets(info(0)).ChartObjects(info(1)).Chart.CopyPicture
+        DoEvents
+        newSlide.Shapes.Paste
+        With newSlide.Shapes(newSlide.Shapes.Count)
+            .Left = 30: .Top = 100: .Width = 550
+            .LockAspectRatio = msoTrue
+            If .Height > 350 Then .Height = 350
+        End With
+        
+        ' 建立統計表
+        Dim dataTab As Shape
+        Set dataTab = newSlide.Shapes.AddTable(7, 2, 620, 100, 300, 250)
+        With dataTab.Table
+            FillTableCell .Cell(1, 1), "總筆數":   FillTableCell .Cell(1, 2), CStr(rowsCount)
+            FillTableCell .Cell(2, 1), "Peak數":   FillTableCell .Cell(2, 2), CStr(pCnt)
+            FillTableCell .Cell(3, 1), "Shift數":  FillTableCell .Cell(3, 2), CStr(sCnt)
+            FillTableCell .Cell(4, 1), "Tilt數":   FillTableCell .Cell(4, 2), CStr(tCnt)
+            FillTableCell .Cell(5, 1), "Peak佔比": FillTableCell .Cell(5, 2), Format(pP, "0.0%")
+            FillTableCell .Cell(6, 1), "Shift佔比": FillTableCell .Cell(6, 2), Format(sP, "0.0%")
+            FillTableCell .Cell(7, 1), "Tilt佔比":  FillTableCell .Cell(7, 2), Format(tP, "0.0%")
+        End With
+        
+        ' 下方文字
+        Dim actBox As Shape
+        Set actBox = newSlide.Shapes.AddTextbox(1, 30, 480, 500, 30)
+        With actBox.TextFrame.TextRange
+            .Text = "Following Action:"
+            ApplyFont .Font, 14, False, True ' 14pt, 黑色, 加粗
+        End With
+    Next k
+    
+    ' 6. 關閉 Excel
+    xlWB.Close False
+    xlApp.Quit
+    
+    ' 7. 另存新檔
+    Dim saveName As String
+    saveName = Format(Date, "yyyymmdd") & "_SPC Trend Cahrt Review"
+    
+    Dim saveFd As Object
+    Set saveFd = Application.FileDialog(3) ' msoFileDialogSaveAs
+    With saveFd
+        .InitialFileName = saveName
+        If .Show = -1 Then
+            pptPres.SaveAs .SelectedItems(1)
+            MsgBox "完成！檔案已儲存。", vbInformation
+        End If
+    End With
+End Sub
+
+' --- 輔助函式：格式化標題 ---
+Sub FormatTitle(sld As Slide, txt As String)
+    Dim shp As Shape
+    Set shp = sld.Shapes.AddTextbox(1, 30, 20, 800, 50)
+    With shp.TextFrame.TextRange
+        .Text = txt
+        With .Font
+            .Name = "Arial Narrow"
+            .NameFarEast = "微軟正黑體"
+            .Size = 28
+            .Bold = True
+            .Color.RGB = RGB(0, 102, 204) ' 藍色
+        End With
+    End With
+End Sub
+
+' --- 輔助函式：填充表格單元格 ---
+Sub FillTableCell(c As Cell, txt As String)
+    With c.Shape.TextFrame.TextRange
+        .Text = txt
+        ApplyFont .Font, 14, False, False
+    End With
+    c.Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+End Sub
+
+' --- 輔助函式：字體套用 ---
+Sub ApplyFont(f As Object, sz As Single, isBold As Boolean, isManualColor As Boolean)
+    f.Name = "Arial Narrow"
+    f.NameFarEast = "微軟正黑體"
+    f.Size = sz
+    f.Bold = IIf(isBold, msoTrue, msoFalse)
+    If Not isManualColor Then f.Color.RGB = RGB(0, 0, 0) ' 黑色
+End Sub
+
+' --- 輔助函式：獲取圖表數量 ---
+Function GetChartCount(wb As Object, sName As String) As Long
+    On Error Resume Next
+    GetChartCount = wb.Sheets(sName).ChartObjects.Count
+    On Error GoTo 0
+End Function
+
+' --- 輔助函式：統計特定偏移類型筆數 ---
+Function CountOffset(ws As Object, headName As String, lastR As Long) As Long
+    Dim c As Long, colIdx As Long: colIdx = 0
+    For c = 1 To 25 ' 掃描前 25 欄
+        If InStr(1, ws.Cells(1, c).Value, headName, vbTextCompare) > 0 Then
+            colIdx = c: Exit For
+        End If
+    Next c
+    
+    If colIdx > 0 Then
+        ' 統計 1 或 Y
+        CountOffset = Application.WorksheetFunction.CountIf(ws.Range(ws.Cells(2, colIdx), ws.Cells(lastR, colIdx)), 1) + _
+                      Application.WorksheetFunction.CountIf(ws.Range(ws.Cells(2, colIdx), ws.Cells(lastR, colIdx)), "Y")
+    Else
+        CountOffset = 0
+    End If
+End Function
