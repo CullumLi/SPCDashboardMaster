@@ -1,0 +1,277 @@
+Sub GenerateSPCTrendReport()
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim fileFd As Object
+    Dim xlPath As String
+    
+    ' 1. 開啟檔案選擇視窗讓使用者選擇 Excel 檔案
+    Set fileFd = Application.FileDialog(1) ' msoFileDialogFilePicker
+    With fileFd
+        .Title = "請選擇欲執行的 Excel 檔案"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xlsx; *.xlsm; *.xls"
+        If .Show = 0 Then Exit Sub ' 使用者取消則結束
+        xlPath = .SelectedItems(1)
+    End With
+    
+    ' 2. 啟動 Excel 並開啟活頁簿 (背景執行)
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = False
+    Set xlWB = xlApp.Workbooks.Open(xlPath, ReadOnly:=True)
+    
+    ' 3. 統計前三大分頁的圖表總數 (Global Summary)
+    Dim peakCountGlobal As Long, shiftCountGlobal As Long, tiltCountGlobal As Long
+    On Error Resume Next
+    peakCountGlobal = xlWB.Sheets("Peak").ChartObjects.Count
+    shiftCountGlobal = xlWB.Sheets("Shift").ChartObjects.Count
+    tiltCountGlobal = xlWB.Sheets("Tilt").ChartObjects.Count
+    On Error GoTo 0
+    
+    ' 4. 使用 Dictionary 收集不重複的圖表 (避免 1~3 種偏移類型重複計算)
+    Dim dictCharts As Object
+    Set dictCharts = CreateObject("Scripting.Dictionary")
+    
+    Dim sheetNames As Variant
+    sheetNames = Array("Peak", "Shift", "Tilt")
+    
+    Dim sName As Variant
+    Dim ws As Object, chObj As Object
+    Dim tText As String
+    
+    For Each sName In sheetNames
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = xlWB.Sheets(sName)
+        On Error GoTo 0
+        
+        If Not ws Is Nothing Then
+            For Each chObj In ws.ChartObjects
+                If chObj.Chart.HasTitle Then
+                    tText = chObj.Chart.ChartTitle.Text
+                Else
+                    tText = chObj.Name
+                End If
+                
+                ' 如果圖表標題尚未加入，則記錄該圖表物件
+                If Not dictCharts.Exists(tText) Then
+                    dictCharts.Add tText, chObj
+                End If
+            Next chObj
+        End If
+    Next sName
+    
+    ' 5. 開始建立 PowerPoint 投影片
+    Dim pptPres As Presentation
+    Set pptPres = ActivePresentation
+    Dim newSlide As Slide
+    Dim slideIndex As Long
+    slideIndex = pptPres.Slides.Count + 1
+    
+    ' --- 第一頁投影片：Trend Chart Summary ---
+    Set newSlide = pptPres.Slides.Add(slideIndex, 12) ' 12 = ppLayoutBlank (空白版面)
+    slideIndex = slideIndex + 1
+    
+    ' 建立第一頁標題
+    Dim titleShape As Shape
+    Set titleShape = newSlide.Shapes.AddTextbox(1, 50, 40, 860, 50)
+    With titleShape.TextFrame.TextRange
+        .Text = "Trend Chart Summary"
+        With .Font
+            .Name = "Arial Narrow"
+            .NameFarEast = "微軟正黑體"
+            .Size = 28
+            .Bold = True
+            .Color.RGB = RGB(0, 102, 204) ' 藍字
+        End With
+    End With
+    
+    ' 建立第一頁總結表格 (4列2欄)
+    Dim summaryTable As Shape
+    Set summaryTable = newSlide.Shapes.AddTable(4, 2, 330, 180, 300, 160)
+    With summaryTable.Table
+        .Cell(1, 1).Shape.TextFrame.TextRange.Text = "偏移類型"
+        .Cell(1, 2).Shape.TextFrame.TextRange.Text = "數量"
+        .Cell(2, 1).Shape.TextFrame.TextRange.Text = "Peak"
+        .Cell(2, 2).Shape.TextFrame.TextRange.Text = CStr(peakCountGlobal)
+        .Cell(3, 1).Shape.TextFrame.TextRange.Text = "Shift"
+        .Cell(3, 2).Shape.TextFrame.TextRange.Text = CStr(shiftCountGlobal)
+        .Cell(4, 1).Shape.TextFrame.TextRange.Text = "Tilt"
+        .Cell(4, 2).Shape.TextFrame.TextRange.Text = CStr(tiltCountGlobal)
+        
+        ' 格式化表格字體
+        Dim r As Long, c As Long
+        For r = 1 To 4
+            For c = 1 To 2
+                With .Cell(r, c).Shape.TextFrame.TextRange.Font
+                    .Name = "Arial Narrow"
+                    .NameFarEast = "微軟正黑體"
+                    .Size = 14
+                    .Color.RGB = RGB(0, 0, 0)
+                End With
+                .Cell(r, c).Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+            Next c
+        Next r
+    End With
+    
+    ' --- 依據個別圖表建立獨立投影片 ---
+    Dim k As Variant
+    Dim rawSheetName As String
+    Dim spaceIdx As Long
+    
+    For Each k In dictCharts.Keys
+        Set chObj = dictCharts(k)
+        tText = CStr(k)
+        
+        ' 擷取 Raw Data 分頁名稱 (取第一個空格前的字串，例如 "10650")
+        spaceIdx = InStr(tText, " ")
+        If spaceIdx > 0 Then
+            rawSheetName = Left(tText, spaceIdx - 1)
+        Else
+            rawSheetName = tText
+        End If
+        
+        ' 讀取 Excel 中該分頁的 Raw Data 數據
+        Dim wsRaw As Object
+        Set wsRaw = Nothing
+        On Error Resume Next
+        Set wsRaw = xlWB.Sheets(rawSheetName)
+        On Error GoTo 0
+        
+        Dim totalRows As Long, pCount As Long, sCount As Long, tCount As Long
+        Dim pPct As Double, sPct As Double, tPct As Double
+        totalRows = 0: pCount = 0: sCount = 0: tCount = 0
+        pPct = 0Hex: sPct = 0: tPct = 0
+        
+        If Not wsRaw Is Nothing Then
+            Dim xlLastRow As Long
+            xlLastRow = wsRaw.Cells(wsRaw.Rows.Count, 1).End(-4162).Row ' -4162 = xlUp
+            If xlLastRow > 1 Then
+                totalRows = xlLastRow - 1 ' 扣除標頭列
+                
+                ' 自動搜尋標頭欄位位置
+                Dim colIdx As Long
+                Dim pCol As Long, sCol As Long, tCol As Long
+                pCol = 0: sCol = 0: tCol = 0
+                
+                For colIdx = 1 To 20 ' 掃描前 20 欄
+                    Select Case UCase(wsRaw.Cells(1, colIdx).Value)
+                        Case "PEAK": pCol = colIdx
+                        Case "SHIFT": sCol = colIdx
+                        Case "TILT": tCol = colIdx
+                    End Select
+                Next colIdx
+                
+                ' 計算各別數量 (同時支援計算數值 1 或打勾標記 "Y")
+                If pCol > 0 Then pCount = xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, pCol), wsRaw.Cells(xlLastRow, pCol)), 1) + xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, pCol), wsRaw.Cells(xlLastRow, pCol)), "Y")
+                If sCol > 0 Then sCount = xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, sCol), wsRaw.Cells(xlLastRow, sCol)), 1) + xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, sCol), wsRaw.Cells(xlLastRow, sCol)), "Y")
+                If tCol > 0 Then tCount = xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, tCol), wsRaw.Cells(xlLastRow, tCol)), 1) + xlApp.WorksheetFunction.CountIf(wsRaw.Range(wsRaw.Cells(2, tCol), wsRaw.Cells(xlLastRow, tCol)), "Y")
+                
+                ' 計算佔比
+                If totalRows > 0 Then
+                    pPct = pCount / totalRows
+                    sPct = sCount / totalRows
+                    tPct = tCount / totalRows
+                End If
+            End If
+        End If
+        
+        ' 新增該圖表的投影片
+        Set newSlide = pptPres.Slides.Add(slideIndex, 12)
+        slideIndex = slideIndex + 1
+        
+        ' 設置圖表標題
+        Set titleShape = newSlide.Shapes.AddTextbox(1, 50, 40, 860, 50)
+        With titleShape.TextFrame.TextRange
+            .Text = tText
+            With .Font
+                .Name = "Arial Narrow"
+                .NameFarEast = "微軟正黑體"
+                .Size = 28
+                .Bold = True
+                .Color.RGB = RGB(0, 102, 204)
+            End With
+        End With
+        
+        ' 複製 Excel 圖表並貼進 PPT
+        On Error Resume Next
+        chObj.Chart.CopyPicture
+        newSlide.Shapes.Paste
+        Dim pastedChart As Shape
+        Set pastedChart = newSlide.Shapes(newSlide.Shapes.Count)
+        With pastedChart
+            .Left = 50
+            .Top = 110
+            .Width = 520
+            .LockAspectRatio = msoTrue
+            If .Height > 320 Then .Height = 320
+        End With
+        On Error GoTo 0
+        
+        ' 建立右側數據表格 (7列2欄垂直排列更清晰)
+        Dim dataTable As Shape
+        Set dataTable = newSlide.Shapes.AddTable(7, 2, 600, 110, 310, 260)
+        With dataTable.Table
+            .Cell(1, 1).Shape.TextFrame.TextRange.Text = "總筆數"
+            .Cell(1, 2).Shape.TextFrame.TextRange.Text = CStr(totalRows)
+            .Cell(2, 1).Shape.TextFrame.TextRange.Text = "Peak數"
+            .Cell(2, 2).Shape.TextFrame.TextRange.Text = CStr(pCount)
+            .Cell(3, 1).Shape.TextFrame.TextRange.Text = "Shift數"
+            .Cell(3, 2).Shape.TextFrame.TextRange.Text = CStr(sCount)
+            .Cell(4, 1).Shape.TextFrame.TextRange.Text = "Tilt數"
+            .Cell(4, 2).Shape.TextFrame.TextRange.Text = CStr(tCount)
+            .Cell(5, 1).Shape.TextFrame.TextRange.Text = "Peak佔比"
+            .Cell(5, 2).Shape.TextFrame.TextRange.Text = Format(pPct, "0.0%")
+            .Cell(6, 1).Shape.TextFrame.TextRange.Text = "Shift佔比"
+            .Cell(6, 2).Shape.TextFrame.TextRange.Text = Format(sPct, "0.0%")
+            .Cell(7, 1).Shape.TextFrame.TextRange.Text = "Tilt佔比"
+            .Cell(7, 2).Shape.TextFrame.TextRange.Text = Format(tPct, "0.0%")
+            
+            ' 格式化字體
+            For r = 1 To 7
+                For c = 1 To 2
+                    With .Cell(r, c).Shape.TextFrame.TextRange.Font
+                        .Name = "Arial Narrow"
+                        .NameFarEast = "微軟正黑體"
+                        .Size = 14
+                        .Color.RGB = RGB(0, 0, 0)
+                    }
+                    .Cell(r, c).Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+                Next c
+            Next r
+        End With
+        
+        ' 投影片最下方列出 Following Action:
+        Dim actionShape As Shape
+        Set actionShape = newSlide.Shapes.AddTextbox(1, 50, 460, 860, 40)
+        With actionShape.TextFrame.TextRange
+            .Text = "Following Action:"
+            With .Font
+                .Name = "Arial Narrow"
+                .NameFarEast = "微軟正黑體"
+                .Size = 14
+                .Bold = True ' 加粗以突顯導引
+                .Color.RGB = RGB(0, 0, 0)
+            End With
+        End With
+    Next k
+    
+    ' 6. 關閉 Excel 釋放資源
+    xlWB.Close False
+    xlApp.Quit
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+    
+    ' 7. 另存新檔：讓使用者自由選擇儲存路徑
+    Dim defaultName As String
+    defaultName = Format(Date, "yyyymmdd") & "_SPC Trend Cahrt Review"
+    
+    Dim saveFd As Object
+    Set saveFd = Application.FileDialog(3) ' msoFileDialogSaveAs
+    With saveFd
+        .InitialFileName = defaultName
+        If .Show = -1 Then
+            pptPres.SaveAs .SelectedItems(1)
+            MsgBox "簡報產生並儲存成功！", vbInformation, "系統通知"
+        End If
+    End With
+End Sub
