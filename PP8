@@ -1,0 +1,154 @@
+Option Explicit
+
+Sub ImportImagesToAuditTable()
+    Dim fldrFd As Object
+    Dim folderPath As String
+    
+    ' 1. 讓使用者自由選擇照片資料夾
+    Set fldrFd = Application.FileDialog(4) ' msoFileDialogFolderPicker
+    With fldrFd
+        .Title = "請選擇含有稽核照片的資料夾"
+        If .Show = 0 Then Exit Sub ' 使用者取消則結束
+        folderPath = .SelectedItems(1) & "\"
+    End With
+    
+    ' 2. 搜尋資料夾內的所有常用格式照片
+    Dim fileName As String
+    Dim fileList As Object
+    Set fileList = CreateObject("Scripting.Dictionary")
+    
+    ' 支援 jpg, jpeg, png, bmp 格式
+    Dim ext As Variant
+    Dim extArr As Variant
+    extArr = Array("*.jpg", "*.jpeg", "*.png", "*.bmp")
+    
+    For Each ext In extArr
+        fileName = Dir(folderPath & ext)
+        Do While fileName <> ""
+            If Not fileList.Exists(fileName) Then
+                fileList.Add fileName, folderPath & fileName
+            End If
+            fileName = Dir
+        Loop
+    Next ext
+    
+    ' 檢查是否有照片
+    If fileList.Count = 0 Then
+        MsgBox "選擇的資料夾內沒有找到任何照片（JPG/PNG/BMP）！", vbExclamation, "系統通知"
+        Exit Sub
+    End If
+    
+    ' 3. 開始建立投影片與 2x2 稽核表格
+    Dim pptPres As Presentation: Set pptPres = ActivePresentation
+    Dim newSlide As Slide
+    Dim sldIdx As Long: sldIdx = pptPres.Slides.Count + 1
+    
+    Dim k As Variant
+    Dim fullPath As String
+    Dim pureName As String
+    Dim dotPos As Long
+    
+    Dim titleShape As Shape
+    Dim tblShape As Shape
+    Dim auditTable As Table
+    
+    For Each k In fileList.Keys
+        fileName = CStr(k)
+        fullPath = fileList(k)
+        
+        ' 取得不含副檔名的純檔名作為標題
+        dotPos = InStrRev(fileName, ".")
+        If dotPos > 0 Then pureName = Left(fileName, dotPos - 1) Else pureName = fileName
+        
+        ' 新增一張空白投影片
+        Set newSlide = pptPres.Slides.Add(sldIdx, 12) ' 12 = ppLayoutBlank
+        sldIdx = sldIdx + 1
+        
+        ' 建立投影片標題 (28點 藍字 加粗)
+        Set titleShape = newSlide.Shapes.AddTextbox(1, 40, 20, 880, 50) ' msoTextOrientationHorizontal = 1
+        With titleShape.TextFrame.TextRange
+            .Text = pureName
+            With .Font
+                .Name = "Arial Narrow"
+                .NameFarEast = "微軟正黑體"
+                .Size = 28
+                .Bold = True
+                .Color.RGB = RGB(0, 102, 204)
+            End With
+        End With
+        
+        ' 建立 2x2 表格 (位置配置於投影片中央下緣)
+        ' 參數：列數=2, 欄數=2, Left=40, Top=90, Width=880, Height=420
+        Set tblShape = newSlide.Shapes.AddTable(2, 2, 40, 90, 880, 420)
+        Set auditTable = tblShape.Table
+        
+        ' 填入固定文字內容
+        auditTable.Cell(1, 1).Shape.TextFrame.TextRange.Text = "稽核缺失(Before)"
+        auditTable.Cell(1, 2).Shape.TextFrame.TextRange.Text = "改善後(After)"
+        auditTable.Cell(2, 2).Shape.TextFrame.TextRange.Text = "" ' 保持空白
+        
+        ' 設定第一列標頭的高度與背景色 (使其具有專業報告感)
+        auditTable.Rows(1).Height = 40
+        
+        ' 統一格式化表格內所有文字 (14點 黑色 微軟正黑體)
+        Dim r As Long, c As Long
+        For r = 1 To 2
+            For c = 1 To 2
+                With auditTable.Cell(r, c).Shape.TextFrame.TextRange.Font
+                    .Name = "Arial Narrow"
+                    .NameFarEast = "微軟正黑體"
+                    .Size = 14
+                    .Color.RGB = RGB(0, 0, 0)
+                    If r = 1 Then .Bold = True ' 標頭加粗
+                End With
+                ' 文字水置中與垂直置中
+                auditTable.Cell(r, c).Shape.TextFrame.HorizontalAnchor = 2 ' msoAnchorCenter
+                auditTable.Cell(r, c).Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+            Next c
+        Next r
+        
+        ' --- 4. 核心演算法：將照片置入 Cell(2,1) 並自動等比例縮放置中 ---
+        Dim cellTarget As Cell
+        Set cellTarget = auditTable.Cell(2, 1)
+        
+        ' 取得儲存格的絕對位置與可用空間
+        Dim cellLeft As Single: cellLeft = tblShape.Left + cellTarget.Shape.Left
+        Dim cellTop As Single: cellTop = tblShape.Top + cellTarget.Shape.Top
+        Dim cellWidth As Single: cellWidth = cellTarget.Shape.Width
+        Dim cellHeight As Single: cellHeight = cellTarget.Shape.Height
+        
+        ' 插入照片至投影片
+        Dim picShape As Shape
+        Set picShape = newSlide.Shapes.AddPicture(fullPath, msoFalse, msoTrue, cellLeft, cellTop, -1, -1)
+        
+        ' 計算縮放比例 (留設 10 點的邊距避免貼齊格子線)
+        Dim maxW As Single: maxW = cellWidth - 14
+        Dim maxH As Single: maxH = cellHeight - 14
+        
+        picShape.LockAspectRatio = msoTrue
+        
+        If (picShape.Width / picShape.Height) > (maxW / maxH) Then
+            ' 照片偏寬 -> 以寬度為基準縮放
+            picShape.Width = maxW
+        Else
+            ' 照片偏高 -> 以高度為基準縮放
+            picShape.Height = maxH
+        End If
+        
+        ' 將照片精確移動到 Cell(2,1) 的正中央
+        picShape.Left = cellLeft + (cellWidth - picShape.Width) / 2
+        picShape.Top = cellTop + (cellHeight - picShape.Height) / 2
+        
+    Next k
+    
+    ' 5. 讓使用者自由選擇儲存路徑與檔名
+    Dim saveFd As Object
+    Set saveFd = Application.FileDialog(3) ' msoFileDialogSaveAs
+    With saveFd
+        .InitialFileName = Format(Date, "yyyymmdd") & "_現場稽核改善報告.pptx"
+        If .Show = -1 Then
+            pptPres.SaveAs .SelectedItems(1), 1 ' 1 = ppSaveAsPresentation (.pptx 格式)
+            MsgBox "報告已成功產生並儲存！共建立 " & fileList.Count & " 張稽核投影片。", vbInformation, "系統通知"
+        End If
+    End With
+End Sub
