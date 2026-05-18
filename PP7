@@ -1,0 +1,360 @@
+Option Explicit
+
+' 宣告 Windows API Sleep 函式，用於徹底解決 Excel 剪貼簿複製延遲導致圖表重複的問題
+#If VBA7 Then
+    Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+#Else
+    Public Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+#End If
+
+Sub GenerateSPCTrendReport_V6()
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim fileFd As Object
+    Dim xlPath As String
+    
+    ' 1. 開啟檔案選擇視窗讓使用者選擇 Excel 檔案
+    Set fileFd = Application.FileDialog(1) ' msoFileDialogFilePicker
+    With fileFd
+        .Title = "請選擇欲執行的 Excel 檔案"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xlsx; *.xlsm; *.xls"
+        If .Show = 0 Then Exit Sub ' 使用者取消則結束
+        xlPath = .SelectedItems(1)
+    End With
+    
+    ' 2. 啟動 Excel 並開啟活頁簿
+    On Error Resume Next
+    Set xlApp = CreateObject("Excel.Application")
+    xlApp.Visible = False
+    xlApp.DisplayAlerts = False
+    Set xlWB = xlApp.Workbooks.Open(xlPath, ReadOnly:=True)
+    On Error GoTo 0
+    
+    If xlWB Is Nothing Then
+        MsgBox "無法開啟選擇的 Excel 檔案！", vbCritical, "錯誤"
+        xlApp.Quit
+        Exit Sub
+    End If
+    
+    ' 3. 統計前三大分頁的圖表總數 (Global Summary)
+    Dim peakCountGlobal As Long, shiftCountGlobal As Long, tiltCountGlobal As Long
+    peakCountGlobal = GetSheetChartCount(xlWB, "Peak")
+    shiftCountGlobal = GetSheetChartCount(xlWB, "Shift")
+    tiltCountGlobal = GetSheetChartCount(xlWB, "Tilt")
+    
+    ' 4. 使用 Dictionary 收集不重複的圖表 (Key: 圖表標題, Value: Array(來源分頁名稱, 圖表物件名稱))
+    Dim dictCharts As Object
+    Set dictCharts = CreateObject("Scripting.Dictionary")
+    
+    Dim sheetNames As Variant
+    sheetNames = Array("Peak", "Shift", "Tilt")
+    
+    Dim sName As Variant
+    Dim wsSource As Object, chObj As Object
+    Dim tText As String
+    
+    For Each sName In sheetNames
+        Set wsSource = Nothing
+        On Error Resume Next
+        Set wsSource = xlWB.Sheets(sName)
+        On Error GoTo 0
+        
+        If Not wsSource Is Nothing Then
+            For Each chObj In wsSource.ChartObjects
+                ' 取得圖表標題內容
+                If chObj.Chart.HasTitle Then
+                    tText = Trim(chObj.Chart.ChartTitle.Text)
+                Else
+                    tText = Trim(chObj.Name)
+                End If
+                
+                ' 如果該圖表尚未被記錄，則加入 Dictionary (確保不同圖表生成對應張數的投影片)
+                If Not dictCharts.Exists(tText) And tText <> "" Then
+                    dictCharts.Add tText, Array(sName, chObj.Name)
+                End If
+            Next chObj
+        End If
+    Next sName
+    
+    ' 5. 開始建立 PowerPoint 投影片
+    Dim pptPres As Presentation: Set pptPres = ActivePresentation
+    Dim newSlide As Slide
+    Dim slideIndex As Long: slideIndex = pptPres.Slides.Count + 1
+    
+    ' --- 第一頁投影片：Trend Chart Summary ---
+    Set newSlide = pptPres.Slides.Add(slideIndex, 12) ' 12 = ppLayoutBlank (空白版面)
+    slideIndex = slideIndex + 1
+    
+    ' 建立並格式化第一頁標題
+    Dim titleShape As Shape
+    Set titleShape = newSlide.Shapes.AddTextbox(1, 40, 25, 880, 50)
+    titleShape.TextFrame.TextRange.Text = "Trend Chart Summary"
+    FormatTextRange titleShape.TextFrame.TextRange, 28, True, RGB(0, 102, 204)
+    
+    ' 建立第一頁總結表格 (4列2欄)
+    Dim summaryTable As Shape
+    Set summaryTable = newSlide.Shapes.AddTable(4, 2, 330, 180, 300, 160)
+    With summaryTable.Table
+        .Cell(1, 1).Shape.TextFrame.TextRange.Text = "偏移類型": .Cell(1, 2).Shape.TextFrame.TextRange.Text = "數量"
+        .Cell(2, 1).Shape.TextFrame.TextRange.Text = "Peak":     .Cell(2, 2).Shape.TextFrame.TextRange.Text = CStr(peakCountGlobal)
+        .Cell(3, 1).Shape.TextFrame.TextRange.Text = "Shift":    .Cell(3, 2).Shape.TextFrame.TextRange.Text = CStr(shiftCountGlobal)
+        .Cell(4, 1).Shape.TextFrame.TextRange.Text = "Tilt":     .Cell(4, 2).Shape.TextFrame.TextRange.Text = CStr(tiltCountGlobal)
+        
+        ' 格式化表格字體
+        Dim r As Long, c As Long
+        For r = 1 To 4
+            For c = 1 To 2
+                FormatTextRange .Cell(r, c).Shape.TextFrame.TextRange, 14, False, RGB(0, 0, 0)
+                .Cell(r, c).Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+            Next c
+        Next r
+    End With
+    
+    ' --- 依據不重複圖表建立獨立細節投影片 ---
+    Dim k As Variant, chartInfo As Variant
+    Dim rawSheetName As String, spaceIdx As Long
+    Dim wsRaw As Object
+    
+    For Each k In dictCharts.Keys
+        tText = CStr(k)
+        chartInfo = dictCharts(k) ' 取得 Array(來源分頁, 圖表名稱)
+        
+        ' 擷取 Raw Data 分頁名稱
+        spaceIdx = InStr(tText, " ")
+        If spaceIdx > 0 Then
+            rawSheetName = Left(tText, spaceIdx - 1)
+        Else
+            rawSheetName = tText
+        End If
+        
+        ' 讀取該圖表對應的 Raw Data 分頁
+        Set wsRaw = Nothing
+        On Error Resume Next
+        Set wsRaw = xlWB.Sheets(rawSheetName)
+        On Error GoTo 0
+        
+        ' 初始化統計變數
+        Dim totalRows As Long, pCount As Long, sCount As Long, tCount As Long
+        Dim pPct As Double, sPct As Double, tPct As Double
+        totalRows = 0: pCount = 0: sCount = 0: tCount = 0
+        pPct = 0: sPct = 0: tPct = 0
+        
+        ' 基於 C 欄進行高精度色彩與筆數統計
+        If Not wsRaw Is Nothing Then
+            Dim xlLastRow As Long
+            On Error Resume Next
+            xlLastRow = wsRaw.Cells(wsRaw.Rows.Count, 3).End(-4162).Row ' -4162 = xlUp
+            On Error GoTo 0
+            
+            If xlLastRow >= 2 Then
+                Dim i As Long
+                Dim cellColor As Long, rChan As Long, gChan As Long, bChan As Long
+                Dim cellVal As Variant
+                
+                For i = 2 To xlLastRow
+                    cellVal = wsRaw.Cells(i, 3).Value
+                    
+                    If Not IsEmpty(cellVal) And Trim(CStr(cellVal)) <> "" Then
+                        totalRows = totalRows + 1
+                        
+                        ' 擷取 C 欄實體渲染顏色
+                        cellColor = wsRaw.Cells(i, 3).DisplayFormat.Interior.Color
+                        rChan = cellColor Mod 256
+                        gChan = (cellColor \ 256) Mod 256
+                        bChan = cellColor \ 65536
+                        
+                        ' 進行高精度色彩分群辨識
+                        If rChan > 220 And gChan > 220 And bChan < 100 Then
+                            pCount = pCount + 1 ' 黃色 -> Peak
+                        ElseIf rChan > 200 And gChan < 100 And bChan < 100 Then
+                            sCount = sCount + 1 ' 紅色 -> Shift
+                        ElseIf rChan > 100 And gChan < 100 And bChan > 100 Then
+                            tCount = tCount + 1 ' 紫色 -> Tilt
+                        End If
+                    End If
+                Next i
+                
+                ' 計算佔比
+                If totalRows > 0 Then
+                    pPct = pCount / totalRows
+                    sPct = sCount / totalRows
+                    tPct = tCount / totalRows
+                End If
+            End If
+        End If
+        
+        ' 新增該圖表的獨立投影片
+        Set newSlide = pptPres.Slides.Add(slideIndex, 12)
+        slideIndex = slideIndex + 1
+        
+        ' 設置圖表標題 (28點 藍字 加粗)
+        Set titleShape = newSlide.Shapes.AddTextbox(1, 40, 25, 880, 50)
+        titleShape.TextFrame.TextRange.Text = tText
+        FormatTextRange titleShape.TextFrame.TextRange, 28, True, RGB(0, 102, 204)
+        
+        ' --- 強制活頁簿實體聚焦切換，配合 Windows API 複製圖表 ---
+        xlApp.WindowState = -4143
+        xlWB.Sheets(chartInfo(0)).Activate
+        DoEvents
+        
+        Dim targetChartObj As Object
+        Set targetChartObj = xlWB.Sheets(chartInfo(0)).ChartObjects(chartInfo(1))
+        targetChartObj.Select
+        DoEvents
+        
+        targetChartObj.Chart.CopyPicture Appearance:=1, Format:=2
+        DoEvents
+        Sleep 400
+        
+        ' 貼上至 PowerPoint 投影片 (左側配置)
+        newSlide.Shapes.Paste
+        DoEvents
+        
+        Dim pastedChart As Shape
+        Set pastedChart = newSlide.Shapes(newSlide.Shapes.Count)
+        With pastedChart
+            .Left = 40
+            .Top = 100
+            .Width = 440
+            .LockAspectRatio = msoTrue
+            If .Height > 330 Then .Height = 330
+        End With
+        
+        ' 建立中間數據統計表格 (7列2欄)
+        Dim dataTable As Shape
+        Set dataTable = newSlide.Shapes.AddTable(7, 2, 500, 110, 210, 240)
+        With dataTable.Table
+            .Cell(1, 1).Shape.TextFrame.TextRange.Text = "總筆數":   .Cell(1, 2).Shape.TextFrame.TextRange.Text = CStr(totalRows)
+            .Cell(2, 1).Shape.TextFrame.TextRange.Text = "Peak數":   .Cell(2, 2).Shape.TextFrame.TextRange.Text = CStr(pCount)
+            .Cell(3, 1).Shape.TextFrame.TextRange.Text = "Shift數":  .Cell(3, 2).Shape.TextFrame.TextRange.Text = CStr(sCount)
+            .Cell(4, 1).Shape.TextFrame.TextRange.Text = "Tilt數":   .Cell(4, 2).Shape.TextFrame.TextRange.Text = CStr(tCount)
+            .Cell(5, 1).Shape.TextFrame.TextRange.Text = "Peak佔比": .Cell(5, 2).Shape.TextFrame.TextRange.Text = Format(pPct, "0.0%")
+            .Cell(6, 1).Shape.TextFrame.TextRange.Text = "Shift佔比": .Cell(6, 2).Shape.TextFrame.TextRange.Text = Format(sPct, "0.0%")
+            .Cell(7, 1).Shape.TextFrame.TextRange.Text = "Tilt佔比":  .Cell(7, 2).Shape.TextFrame.TextRange.Text = Format(tPct, "0.0%")
+            
+            ' 格式化表格字體 (14點 黑色)
+            For r = 1 To 7
+                For c = 1 To 2
+                    FormatTextRange .Cell(r, c).Shape.TextFrame.TextRange, 14, False, RGB(0, 0, 0)
+                    .Cell(r, c).Shape.TextFrame.VerticalAnchor = msoAnchorMiddle
+                Next c
+            Next r
+        End With
+        
+        ' --- 5.5 全新加入：在右側自動生成原生圓餅圖 ---
+        Dim pptChart As Shape
+        Dim xChart As Object
+        Dim chData As Object
+        Dim xWb As Object
+        Dim xWs As Object
+        
+        On Error Resume Next
+        ' 參數說明：5 代表 xlPie (圓餅圖類型)，配置於右側：Left=730, Top=110, Width=200, Height=240
+        Set pptChart = newSlide.Shapes.AddChart2(-1, 5, 730, 110, 200, 240)
+        If Not pptChart Is Nothing Then
+            Set xChart = pptChart.Chart
+            xChart.HasTitle = False ' 隱藏圖表內建標題以免重疊
+            
+            ' 啟動內嵌資料數據工作表
+            Set chData = xChart.ChartData
+            chData.Activate
+            Set xWb = chData.Workbook
+            xWb.Application.Visible = False ' 隱藏資料活頁簿視窗防止畫面閃爍
+            
+            Set xWs = xWb.Worksheets(1)
+            xWs.Cells.Clear
+            
+            ' 填入圓餅圖需要的類別與數值
+            xWs.Cells(1, 1).Value = "偏移類型"
+            xWs.Cells(1, 2).Value = "數量"
+            xWs.Cells(2, 1).Value = "Peak"
+            xWs.Cells(2, 2).Value = pCount
+            xWs.Cells(3, 1).Value = "Shift"
+            xWs.Cells(3, 2).Value = sCount
+            xWs.Cells(4, 1).Value = "Tilt"
+            xWs.Cells(4, 2).Value = tCount
+            
+            ' 重新指定圖表資料範圍
+            xChart.SetSourceData "='" & xWs.Name & "'!$A$1:$B$4"
+            
+            ' 開啟並配置資料標籤（設定為僅顯示百分比，且符合 14pt 黑色規範）
+            xChart.ApplyDataLabels
+            If xChart.HasDataLabels Then
+                With xChart.DataLabels
+                    .ShowPercentage = True
+                    .ShowValue = False
+                    With .Format.TextFrame2.TextRange.Font
+                        .NameComplexScript = "Arial Narrow"
+                        .NameFarEast = "微軟正黑體"
+                        .Size = 14
+                        .Color.RGB = RGB(0, 0, 0)
+                    End With
+                End With
+            End If
+            
+            ' 配置圓餅圖圖例字型格式 (14點 黑色)
+            If xChart.HasLegend Then
+                With xChart.Legend.Format.TextFrame2.TextRange.Font
+                    .NameComplexScript = "Arial Narrow"
+                    .NameFarEast = "微軟正黑體"
+                    .Size = 14
+                    .Color.RGB = RGB(0, 0, 0)
+                End With
+            End If
+            
+            ' 儲存並關閉圖表數據背景活頁簿
+            xWb.Close SaveChanges:=True
+        End If
+        On Error GoTo 0
+        ' ----------------------------------------------------
+        
+        ' 投影片最下方列出 "Following Action:"
+        Dim actionShape As Shape
+        Set actionShape = newSlide.Shapes.AddTextbox(1, 40, 470, 880, 40)
+        actionShape.TextFrame.TextRange.Text = "Following Action:"
+        FormatTextRange actionShape.TextFrame.TextRange, 14, True, RGB(0, 0, 0)
+    Next k
+    
+    ' 6. 關閉 Excel 並釋放背景資源
+    xlWB.Close False
+    xlApp.Quit
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+    
+    ' 7. 另存新檔為 .pptx 格式
+    Dim defaultName As String
+    defaultName = Format(Date, "yyyymmdd") & "_SPC Trend Cahrt Review"
+    
+    Dim saveFd As Object
+    Set saveFd = Application.FileDialog(3) ' msoFileDialogSaveAs
+    With saveFd
+        .InitialFileName = defaultName & ".pptx"
+        If .Show = -1 Then
+            pptPres.SaveAs .SelectedItems(1), 1 ' 1 = ppSaveAsPresentation
+            MsgBox "所有圖表、數據分析與佔比圓餅圖簡報已成功產生！", vbInformation, "系統通知"
+        End If
+    End With
+End Sub
+
+' =========================================================================
+' 輔助功能函式群 (Helper Functions)
+' =========================================================================
+
+' 專屬文字格式套用工具：嚴格執行英數 Arial Narrow 與中文微軟正黑體雙軌配置
+Private Sub FormatTextRange(rng As Object, fontSize As Single, isBold As Boolean, colorRGB As Long)
+    With rng.Font
+        .Name = "Arial Narrow"
+        .NameFarEast = "微軟正黑體"
+        .Size = fontSize
+        .Bold = IIf(isBold, msoTrue, msoFalse)
+        .Color.RGB = colorRGB
+    End With
+End Sub
+
+' 安全獲取 Excel 分頁圖表總數
+Private Function GetSheetChartCount(wb As Object, sName As String) As Long
+    On Error Resume Next
+    GetSheetChartCount = wb.Sheets(sName).ChartObjects.Count
+    On Error GoTo 0
+End Function
