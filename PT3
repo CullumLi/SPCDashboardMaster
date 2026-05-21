@@ -1,0 +1,52 @@
+Sub FormatPresentationFonts AndTitle()
+    Dim sld As Slide
+    Dim shp As Shape
+    Dim txtRange As TextRange
+    
+    ' 遍歷簡報中的所有投影片
+    For Each sld In ActivePresentation.Slides
+        ' 遍歷投影片中的所有形狀
+        For Each shp In sld.Shapes
+            
+            ' 檢查形狀是否包含文字方塊且裡面有文字
+            If shp.HasTextFrame Then
+                If shp.TextFrame.HasText Then
+                    
+                    Set txtRange = shp.TextFrame.TextRange
+                    
+                    ' 規則 1 & 2: 分流設定中英文字體
+                    With txtRange.Font
+                        .NameFarEast = "微軟正黑體"  ' 所有中文使用微軟正黑體
+                        .NameAscii = "Arial Narrow"  ' 所有英文使用 Arial Narrow
+                        .NameOther = "Arial Narrow"  ' 其他字元
+                        .Name = "Arial Narrow"       ' 預設字體
+                    End With
+                    
+                    ' 規則 3: 判斷是否為最上方的標題 (Title Placeholder)
+                    If IsTitlePlaceholder(shp) Then
+                        With txtRange.Font
+                            .Size = 28               ' 字形大小為 28 Points
+                            .Color.RGB = RGB(0, 0, 255) ' 字形色彩為藍色 #0000FF
+                            .Bold = msoTrue          ' 文字變為粗體
+                        End With
+                    End If
+                    
+                End If
+            End If
+        Next shp
+    Next sld
+    
+    MsgBox "投影片字體與標題格式統一完成！", vbInformation, "執行完畢"
+End Sub
+
+' 輔助函數：精準判斷形狀是否為標題預留位置 (Title Placeholder)
+Function IsTitlePlaceholder(shp As Shape) As Boolean
+    IsTitlePlaceholder = False
+    If shp.Type = msoPlaceholder Then
+        Select Case shp.PlaceholderFormat.Type
+            Case ppPlaceholderTitle, ppPlaceholderCenterTitle, ppPlaceholderHeader
+                // 只要是簡報的標題類型，皆認定為標題
+                IsTitlePlaceholder = True
+        End Select
+    End If
+End Function
