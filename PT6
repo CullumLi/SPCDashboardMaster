@@ -1,0 +1,86 @@
+Sub FormatAllSlidesFinal()
+    Dim oSlide As Slide
+    Dim oShape As Shape
+    Dim oTxtRange As TextRange
+    Dim isTitle As Boolean
+    
+    ' 定義顏色：藍色 #0000FF
+    Dim titleColor As Long
+    titleColor = RGB(0, 0, 255)
+    
+    ' 遍歷簡報中的每張投影片
+    For Each oSlide In ActivePresentation.Slides
+        
+        ' 遍歷投影片中的每個物件
+        For Each oShape In oSlide.Shapes
+            
+            ' 檢查物件是否包含文字
+            If oShape.HasTextFrame Then
+                If oShape.TextFrame.HasText Then
+                    
+                    Set oTxtRange = oShape.TextFrame.TextRange
+                    isTitle = False ' 預設初始化
+                    
+                    ' ----------------------------------------------------
+                    ' 【雙重標題判定機制】
+                    ' ----------------------------------------------------
+                    ' 1. 機制一：檢查是否為預設的標題佔位符
+                    If oShape.Type = msoPlaceholder Then
+                        If oShape.PlaceholderFormat.Type = ppPlaceholderTitle Or _
+                           oShape.PlaceholderFormat.Type = ppPlaceholderCenterTitle Then
+                            isTitle = True
+                        End If
+                    End If
+                    
+                    ' 2. 機制二：如果是普通文字方塊，但位置在投影片最上方 (Top < 85 points)
+                    ' 註：85 points 大約是投影片頂端往下 3 公分內的範圍
+                    If Not isTitle And oShape.Top < 85 Then
+                        isTitle = True
+                    End If
+                    
+                    ' ----------------------------------------------------
+                    ' 規則 3：如果判定為標題，強制執行嚴格格式
+                    ' ----------------------------------------------------
+                    If isTitle Then
+                        With oTxtRange.Font
+                            .Size = 28            ' 1. 字形大小 28 Points
+                            .Color.RGB = titleColor ' 2. 字形色彩變為藍色
+                            .Bold = msoTrue       ' 3. 文字變為粗體
+                            .Underline = msoFalse ' 4. 去除文字底線
+                            .Italic = msoFalse    ' 5. 去除斜體
+                            .Shadow = msoFalse    ' 6. 去除文字陰影
+                        End With
+                    End If
+                    
+                    ' ----------------------------------------------------
+                    ' 規則 1 & 2：統一中英文型（不管是標題還是內文都套用）
+                    ' ----------------------------------------------------
+                    With oTxtRange.Font
+                        .NameFarEast = "微軟正黑體"  ' 規則 1：所有中文
+                        .Name = "Arial Narrow"     ' 規則 2：所有英文
+                    End With
+                    
+                End If
+            End If
+            
+            ' ----------------------------------------------------
+            ' 表格處理（維持中英文字型統一）
+            ' ----------------------------------------------------
+            If oShape.HasTable Then
+                Dim rowIdx As Long, colIdx As Long
+                For rowIdx = 1 To oShape.Table.Rows.Count
+                    For colIdx = 1 To oShape.Table.Columns.Count
+                        Set oTxtRange = oShape.Table.Cell(rowIdx, colIdx).Shape.TextFrame.TextRange
+                        With oTxtRange.Font
+                            .NameFarEast = "微軟正黑體"
+                            .Name = "Arial Narrow"
+                        End With
+                    Next colIdx
+                Next rowIdx
+            End If
+            
+        Next oShape
+    Next oSlide
+    
+    MsgBox "PPT 格式已全數強制統一（包含藍色標題）！", vbInformation, "專家提示"
+End Sub
