@@ -1,0 +1,74 @@
+Sub FormatAllSlides()
+    Dim oSlide As Slide
+    Dim oShape As Shape
+    Dim oTxtRange As TextRange
+    Dim i As Long
+    
+    ' 定義顏色：藍色 #0000FF
+    Dim titleColor As Long
+    titleColor = RGB(0, 0, 255)
+    
+    ' 遍歷簡報中的每張投影片
+    For Each oSlide In ActivePresentation.Slides
+        
+        ' 遍歷投影片中的每個物件
+        For Each oShape In oSlide.Shapes
+            
+            ' 檢查物件是否包含文字
+            If oShape.HasTextFrame Then
+                If oShape.TextFrame.HasText Then
+                    
+                    Set oTxtRange = oShape.TextFrame.TextRange
+                    
+                    ' ----------------------------------------------------
+                    ' 規則 3：判斷是否為「每張投影片最上方的標題」
+                    ' 這裡使用 PowerPoint 的 Type 判斷是否為預設的標題框 (ppPlaceholderTitle 或 ppPlaceholderCenterTitle)
+                    ' 如果不是用預設標題框，而是自訂文字方塊，程式碼下方有備用邏輯
+                    ' ----------------------------------------------------
+                    If oShape.Type = msoPlaceholder Then
+                        If oShape.PlaceholderFormat.Type = ppPlaceholderTitle Or _
+                           oShape.PlaceholderFormat.Type = ppPlaceholderCenterTitle Then
+                            
+                            ' 設定標題格式
+                            With oTxtRange.Font
+                                .Size = 28            ' 28 Points
+                                .Color.RGB = titleColor ' 藍色
+                                .Bold = msoTrue       ' 粗體
+                            End With
+                            
+                        End If
+                    End If
+                    
+                    ' ----------------------------------------------------
+                    ' 規則 1 & 2：統一中英文型
+                    ' 因為同一個文字方塊可能中英夾雜，VBA 提供分別設定中英文的屬性
+                    ' ----------------------------------------------------
+                    With oTxtRange.Font
+                        .NameFarEast = "微軟正黑體"  ' 規則 1：所有中文（東亞文字）
+                        .Name = "Arial Narrow"     ' 規則 2：所有英文/數字（西方文字）
+                    End With
+                    
+                End If
+            End If
+            
+            ' ----------------------------------------------------
+            ' 額外處理：如果文字藏在「表格」裡面，也一併處理中英文字型
+            ' ----------------------------------------------------
+            If oShape.HasTable Then
+                Dim rowIdx As Long, colIdx As Long
+                For rowIdx = 1 To oShape.Table.Rows.Count
+                    For colIdx = 1 To oShape.Table.Columns.Count
+                        Set oTxtRange = oShape.Table.Cell(rowIdx, colIdx).Shape.TextFrame.TextRange
+                        With oTxtRange.Font
+                            .NameFarEast = "微軟正黑體"
+                            .Name = "Arial Narrow"
+                        End With
+                    Next colIdx
+                Next rowIdx
+            End If
+            
+        Next oShape
+    Next oSlide
+    
+    MsgBox "PPT 格式統一完成！", vbInformation, "專家提示"
+End Sub
