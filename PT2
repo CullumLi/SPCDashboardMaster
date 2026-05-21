@@ -1,0 +1,85 @@
+Sub FormatPresentation()
+    Dim sld As Slide
+    Dim shp As Shape
+    Dim txtRange As TextRange
+    Dim para As TextRange
+    Dim i As Integer
+    Dim colonPos As Long
+    
+    ' 遍歷所有投影片
+    For Each sld In ActivePresentation.Slides
+        ' 遍歷投影片中的所有形狀
+        For Each shp In sld.Shapes
+            
+            ' 檢查形狀是否包含文字
+            If shp.HasTextFrame Then
+                If shp.TextFrame.HasText Then
+                    
+                    Set txtRange = shp.TextFrame.TextRange
+                    
+                    ' 規則 1 & 2: 設定所有中文為微軟正黑體，英文為 Arial Narrow
+                    With txtRange.Font
+                        .NameFarEast = "微軟正黑體"
+                        .NameAscii = "Arial Narrow"
+                        .NameOther = "Arial Narrow"
+                        .Name = "Arial Narrow"
+                    End With
+                    
+                    ' 判斷是否為標題 (Content Page Title)
+                    If IsTitle(shp) Then
+                        ' 規則 3: 標題字形大小 28，藍色 (#0000FF)，粗體
+                        With txtRange.Font
+                            .Size = 28
+                            .Color.RGB = RGB(0, 0, 255)
+                            .Bold = msoTrue
+                        End With
+                    Else
+                        ' 若非標題，則依據段落層級 (IndentLevel) 設定格式
+                        For i = 1 To txtRange.Paragraphs.Count
+                            Set para = txtRange.Paragraphs(i)
+                            
+                            If para.IndentLevel = 1 Then
+                                ' 規則 4: Level One - 設定實心方塊項目符號 (Unicode: 9632 為 ■)
+                                With para.ParagraphFormat.Bullet
+                                    .Type = ppBulletUnnumbered
+                                    .Character = 9632 
+                                    .Font.Name = "Arial" ' 確保方塊能正確顯示
+                                End With
+                                
+                                ' 規則 4: 尋找冒號 (包含半形 ":" 與全形 "：")
+                                colonPos = InStr(1, para.Text, ":")
+                                If colonPos = 0 Then
+                                    colonPos = InStr(1, para.Text, "：")
+                                End If
+                                
+                                ' 如果有找到冒號，且冒號不在第一個字元
+                                If colonPos > 1 Then
+                                    ' 僅針對「冒號前面的字串」設定：大小 20，黑色，粗體
+                                    With para.Characters(1, colonPos - 1).Font
+                                        .Size = 20
+                                        .Color.RGB = RGB(0, 0, 0)
+                                        .Bold = msoTrue
+                                    End With
+                                End If
+                            End If
+                        Next i
+                    End If
+                    
+                End If
+            End If
+        Next shp
+    Next sld
+    
+    MsgBox "投影片格式統一完成！", vbInformation, "執行完畢"
+End Sub
+
+' 輔助函數：判斷形狀是否為標題
+Function IsTitle(shp As Shape) As Boolean
+    IsTitle = False
+    If shp.Type = msoPlaceholder Then
+        If shp.PlaceholderFormat.Type = ppPlaceholderTitle Or _
+           shp.PlaceholderFormat.Type = ppPlaceholderCenterTitle Then
+            IsTitle = True
+        End If
+    End If
+End Function
